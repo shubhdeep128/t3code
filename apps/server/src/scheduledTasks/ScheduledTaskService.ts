@@ -5,12 +5,15 @@ import {
   ScheduledTask,
   ScheduledTaskError,
   ScheduledTaskId,
+  type ScheduledTaskFiring,
   ThreadId,
   ScheduledTaskWebhookDeliveryId,
   type ScheduledTaskDeleteInput,
   type ScheduledTaskDeleteResult,
   type ScheduledTaskGetWebhookDeliveryInput,
   type ScheduledTaskGetWebhookDeliveryResult,
+  type ScheduledTaskListFiringsInput,
+  type ScheduledTaskListFiringsResult,
   type ScheduledTaskListWebhookDeliveriesInput,
   type ScheduledTaskListWebhookDeliveriesResult,
   type ScheduledTaskRotateWebhookTokenInput,
@@ -46,6 +49,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { isMissedFixedTimeRun, isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
+import * as ScheduledTaskFirings from "./ScheduledTaskFirings.ts";
 import {
   redactHeaders,
   redactQuery,
@@ -253,6 +257,10 @@ export class ScheduledTaskService extends Context.Service<
     readonly triggerWebhook: (
       request: WebhookTriggerRequest,
     ) => Effect.Effect<WebhookTriggerResult, ScheduledTaskError>;
+    /** Firings newest first, kept after their task is deleted, each with its run's outcome. */
+    readonly listFirings: (
+      input: ScheduledTaskListFiringsInput,
+    ) => Effect.Effect<ScheduledTaskListFiringsResult, ScheduledTaskError>;
   }
 >()("t3/scheduledTasks/ScheduledTaskService") {}
 
@@ -397,6 +405,7 @@ export const layer = Layer.effect(
     const secretRequests = yield* SecretRequests.SecretRequests;
     const scheduler = yield* Scheduler.Scheduler;
     const readWebhookOrigin = yield* ScheduledTaskWebhookOrigin;
+    const firings = yield* ScheduledTaskFirings.make;
     // Webhook deliveries for one task dispatch in arrival order rather than
     // being dropped while an earlier delivery is still dispatching.
     const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Semaphore.Semaphore>>(
@@ -707,6 +716,53 @@ export const layer = Layer.effect(
         ),
       );
 
+    // A scheduled firing skipped while the previous run is still going moves
+    // on to the next occurrence. A manual one is refused, so the user sees why
+    // nothing started.
+    const skipFiring = (
+      task: ScheduledTask,
+      firing: Omit<ScheduledTaskFiring, "threadId" | "messageId" | "skipped" | "error">,
+      firedAt: DateTime.DateTime,
+    ) =>
+      Effect.gen(function* () {
+        yield* firings
+          .record({
+            ...firing,
+            threadId: null,
+            messageId: null,
+            skipped: "previous_run_active",
+            error: null,
+          })
+          .pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not record schedule task firing.", { taskId: task.id, cause }),
+            ),
+          );
+        yield* Effect.logInfo("Skipping schedule task firing while its previous run is active", {
+          taskId: task.id,
+        });
+        if (firing.trigger === "manual") {
+          return yield* taskError("The previous run of this task is still active.", {
+            taskId: task.id,
+          });
+        }
+        yield* sql`
+          UPDATE scheduled_tasks
+          SET next_run_at = ${nextRunAt(task, firedAt)},
+              updated_at = ${firing.firedAt}
+          WHERE task_id = ${task.id}
+        `.pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not reschedule skipped schedule task firing.", {
+              taskId: task.id,
+              cause,
+            }),
+          ),
+        );
+        yield* notifyChanged;
+        return task;
+      });
+
     const runTask = Effect.fn("ScheduledTaskService.runTask")(function* (
       task: ScheduledTask,
       trigger: "scheduled" | "manual" | "webhook",
@@ -773,15 +829,33 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
-        yield* markRunning(active.id, startedAtIso);
-        yield* notifyChanged;
-
         // A webhook run is keyed by its delivery so the same delivery can
         // never dispatch twice.
         const fireKey =
           webhook === undefined
             ? `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
             : `${active.id}:webhook:${webhook.deliveryId}`;
+        const firing = { fireKey, taskId: active.id, trigger, firedAt: startedAtIso };
+
+        // Each webhook delivery carries its own request, so deliveries queue
+        // behind a running one rather than being skipped.
+        if (
+          webhook === undefined &&
+          (yield* firings.previousRunActive(active.id).pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not read the previous schedule task firing.", {
+                taskId: active.id,
+                cause,
+              }),
+            ),
+          ))
+        ) {
+          return yield* skipFiring(active, firing, startedAt);
+        }
+
+        yield* markRunning(active.id, startedAtIso);
+        yield* notifyChanged;
+
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
         // Dispatch from the fresh row so prompt/model/binding edits made
@@ -834,6 +908,28 @@ export const layer = Layer.effect(
         const runSucceeded = result._tag === "Success";
         const lastRunStatus = runSucceeded ? ("succeeded" as const) : ("failed" as const);
         const lastRunError = runSucceeded ? null : errorMessage(result.cause);
+        // The dispatch already happened, so a firing that cannot be recorded
+        // must not turn it into a failed run.
+        yield* firings
+          .record({
+            ...firing,
+            threadId: !runSucceeded
+              ? null
+              : "threadId" in result.value
+                ? result.value.threadId
+                : result.value.message.threadId,
+            messageId: runSucceeded ? messageId : null,
+            skipped: null,
+            error: lastRunError,
+          })
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Could not record schedule task firing", {
+                taskId: active.id,
+                cause,
+              }),
+            ),
+          );
         // Re-read the task so the next run is computed from the schedule as it
         // is *now* (the user may have edited or deleted it while we ran).
         const current = yield* findTask(task.id);
@@ -1659,6 +1755,17 @@ export const layer = Layer.effect(
         );
       });
 
+    const listFirings: ScheduledTaskService["Service"]["listFirings"] = (input) =>
+      firings.list(input).pipe(
+        Effect.map((list) => ({ firings: list })),
+        Effect.mapError((cause) =>
+          taskError("Could not list schedule task firings.", {
+            ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
+            cause,
+          }),
+        ),
+      );
+
     return ScheduledTaskService.of({
       list,
       subscribeList,
@@ -1670,6 +1777,7 @@ export const layer = Layer.effect(
       listWebhookDeliveries,
       getWebhookDelivery,
       triggerWebhook,
+      listFirings,
     });
   }),
 );
