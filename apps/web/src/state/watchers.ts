@@ -1,0 +1,221 @@
+import { useAtomValue } from "@effect/atom-react";
+import { deriveFindingProgress, type FindingWork } from "@t3tools/shared/findingProgress";
+import {
+  AuthOrchestrationOperateScope,
+  type EnvironmentId,
+  type Finding,
+  type FindingProgress,
+  type OrchestrationV2ThreadShell,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom } from "effect/reactivity";
+import { useEffect, useMemo, useRef } from "react";
+
+import { useEnvironments, type EnvironmentPresentation } from "./environments";
+import { createMergedEnvironmentQuery } from "./pullRequests";
+import { formatEnvironmentQueryError } from "./query";
+import { serverEnvironment } from "./server";
+import { readEnvironmentScope } from "./session";
+import { environmentThreadShells } from "./threads";
+import { useAtomCommand } from "./use-atom-command";
+
+/** The environments the page reads. Only connected ones can answer. */
+export function useWatcherEnvironments(): ReadonlyArray<EnvironmentPresentation> {
+  const { environments } = useEnvironments();
+  return useMemo(
+    () =>
+      environments.filter(
+        (environment) =>
+          environment.connection.phase === "connected" && environment.serverConfig !== null,
+      ),
+    [environments],
+  );
+}
+
+export interface WatcherFindingRow {
+  /** Environment and finding id, unique across the merged list. */
+  readonly key: string;
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+  readonly finding: Finding;
+  readonly progress: FindingProgress;
+  /** The worker's shell when it runs in a connected environment. */
+  readonly work: OrchestrationV2ThreadShell | null;
+}
+
+export interface WatcherFindingsView {
+  readonly rows: ReadonlyArray<WatcherFindingRow>;
+  readonly isPending: boolean;
+  readonly errors: ReadonlyArray<{ readonly label: string; readonly message: string }>;
+}
+
+interface FindingsKey {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+}
+
+const progressEqual = (a: FindingProgress, b: FindingProgress) =>
+  a.kind === b.kind &&
+  ("stalled" in a ? a.stalled === (b as typeof a).stalled : true) &&
+  ("reason" in a ? a.reason === (b as typeof a).reason : true) &&
+  ("pr" in a ? a.pr === (b as typeof a).pr : true);
+
+/**
+ * Every connected environment's findings in one list, each with the progress
+ * of its worker read from whichever environment the work runs in. Rows keep
+ * their identity while their finding, worker shell and progress are unchanged,
+ * so a shell update elsewhere does not re-render the whole list.
+ */
+const watcherFindingsFamily = Atom.family((key: string) => {
+  let previous = new Map<string, WatcherFindingRow>();
+  let previousRows: ReadonlyArray<WatcherFindingRow> = [];
+  return Atom.make((get): WatcherFindingsView => {
+    const environments = JSON.parse(key) as ReadonlyArray<FindingsKey>;
+    const connected = new Set(environments.map((environment) => environment.environmentId));
+    const now = DateTime.nowUnsafe();
+    const next = new Map<string, WatcherFindingRow>();
+    const rows: WatcherFindingRow[] = [];
+    const errors: Array<{ label: string; message: string }> = [];
+    let isPending = false;
+    let changed = false;
+    for (const environment of environments) {
+      const result = get(
+        serverEnvironment.findingsLive({ environmentId: environment.environmentId, input: {} }),
+      );
+      isPending ||= result.waiting;
+      if (result._tag === "Failure") {
+        errors.push({
+          label: environment.label,
+          message: formatEnvironmentQueryError(result.cause),
+        });
+      }
+      const value = Option.getOrNull(AsyncResult.value(result));
+      if (value === null) continue;
+      for (const finding of value.findings) {
+        let work: OrchestrationV2ThreadShell | null = null;
+        let found: FindingWork = { kind: "unreachable" };
+        if (finding.workThread !== null && connected.has(finding.workThread.environmentId)) {
+          work =
+            get(
+              environmentThreadShells.environmentThreadIndexAtom(finding.workThread.environmentId),
+            ).get(finding.workThread.threadId) ?? null;
+          found = work === null ? { kind: "missing" } : { kind: "shell", shell: work };
+        }
+        const progress = deriveFindingProgress(finding, found, now);
+        const rowKey = `${environment.environmentId}:${finding.findingId}`;
+        const before = previous.get(rowKey);
+        const row =
+          before !== undefined &&
+          before.finding === finding &&
+          before.work === work &&
+          before.environmentLabel === environment.label &&
+          progressEqual(before.progress, progress)
+            ? before
+            : {
+                key: rowKey,
+                environmentId: environment.environmentId,
+                environmentLabel: environment.label,
+                finding,
+                progress,
+                work,
+              };
+        changed ||= row !== before;
+        next.set(rowKey, row);
+        rows.push(row);
+      }
+    }
+    previous = next;
+    if (changed || rows.length !== previousRows.length) previousRows = rows;
+    return { rows: previousRows, isPending, errors };
+  }).pipe(Atom.withLabel(`web-watchers:findings:${key}`));
+});
+
+const emptyFindings = Atom.make<WatcherFindingsView>({
+  rows: [],
+  isPending: false,
+  errors: [],
+}).pipe(Atom.withLabel("web-watchers:findings:empty"));
+
+export function useWatcherFindings(
+  environments: ReadonlyArray<EnvironmentPresentation>,
+): WatcherFindingsView {
+  const key = JSON.stringify(
+    environments.map((environment): FindingsKey => ({
+      environmentId: environment.environmentId,
+      label: environment.label,
+    })),
+  );
+  return useAtomValue(environments.length === 0 ? emptyFindings : watcherFindingsFamily(key));
+}
+
+const useMergedTasks = createMergedEnvironmentQuery(
+  "web-watchers:tasks",
+  serverEnvironment.scheduledTasksLive,
+);
+
+const useMergedFirings = createMergedEnvironmentQuery(
+  "web-watchers:firings",
+  serverEnvironment.scheduledTaskFirings,
+);
+
+const FIRINGS_LIMIT = 200;
+
+export function useWatcherTasks(environments: ReadonlyArray<EnvironmentPresentation>) {
+  return useMergedTasks(
+    useMemo(
+      () =>
+        environments.map((environment) => ({
+          environmentId: environment.environmentId,
+          input: {},
+        })),
+      [environments],
+    ),
+  );
+}
+
+export function useWatcherFirings(environments: ReadonlyArray<EnvironmentPresentation>) {
+  return useMergedFirings(
+    useMemo(
+      () =>
+        environments.map((environment) => ({
+          environmentId: environment.environmentId,
+          input: { limit: FIRINGS_LIMIT },
+        })),
+      [environments],
+    ),
+  );
+}
+
+/**
+ * A finding's own server cannot see a worker on another machine merge, so the
+ * client that sees it writes `workMergedAt` once. The row then reads merged on
+ * every client, and a repeat report opens a new finding.
+ */
+export function useRecordMergedWork(rows: ReadonlyArray<WatcherFindingRow>) {
+  const updateFinding = useAtomCommand(serverEnvironment.updateFinding, { reportFailure: false });
+  const written = useRef(new Set<string>());
+  useEffect(() => {
+    for (const row of rows) {
+      if (
+        row.progress.kind !== "merged" ||
+        row.finding.workMergedAt !== null ||
+        row.finding.workThread === null ||
+        row.finding.workThread.environmentId === row.environmentId ||
+        written.current.has(row.key) ||
+        !readEnvironmentScope(row.environmentId, AuthOrchestrationOperateScope)
+      ) {
+        continue;
+      }
+      written.current.add(row.key);
+      const mergedAt = Date.parse(row.progress.pr?.snapshot?.mergedAt ?? "");
+      void updateFinding({
+        environmentId: row.environmentId,
+        input: {
+          findingId: row.finding.findingId,
+          workMergedAt: new Date(Number.isNaN(mergedAt) ? Date.now() : mergedAt).toISOString(),
+        },
+      });
+    }
+  }, [rows, updateFinding]);
+}
