@@ -5,10 +5,11 @@ keyboard shortcut.
 
 ## What a watcher is
 
-A watcher is a scheduled task whose agent reports what it finds. Every scheduled task shows in
-**Watchers → Watchers** as a card with its last run, its next run, and how many of its findings
-are still open. **Run now**, the pause switch, and **Edit** use the same task as
-**Settings → Scheduled tasks**, and **New watcher** opens the same editor.
+A watcher is a scheduled task whose agent reports what it finds. The page has four views: **Today**,
+**Backlog**, **Runs**, and **Watchers**. Every scheduled task shows under **Watchers** as a card
+with its last run, its next run, and how many of its findings are still open. **Run now**, the
+pause switch, and **Edit** use the same task as **Settings → Scheduled tasks**, and **New watcher**
+opens the same editor.
 
 An agent files a finding with the `report_finding` tool. Findings with the same fingerprint in a
 project collapse into one, so two watchers that notice the same problem do not file it twice. Once
@@ -16,8 +17,8 @@ the fix for a finding has merged, the same fingerprint opens a new finding that 
 
 ## Today
 
-**Watchers → Today** lists findings from every connected environment in one place, each tagged with
-the environment it came from, in these groups:
+**Today** lists findings from every connected environment in one place, in these groups. With more
+than one environment connected, each row says which one it came from.
 
 - **Needs you**: a worker asked a question, failed, or its thread is gone.
 - **Ready to merge**: the worker's pull request is approved, green, and mergeable.
@@ -35,10 +36,11 @@ with its outcome, including firings that were skipped because the previous run w
 
 ## Fix a finding
 
-Choose **Fix on** to send a finding to a worker. Pick the environment, the project on it, and the
-base branch. The worker starts in its own worktree on a new `finding/…` branch with the finding as
-its brief. It opens a pull request and stops there; it never merges. The worker uses the model and
-mode of the watcher that filed the finding, or the project's defaults when a thread filed it.
+Choose **Fix on** to send a finding to a worker. Pick the environment, the project on it, the base
+branch, and the model. The model starts as the one the filing watcher runs, when that environment
+has it, else the project or environment default. The worker starts in its own worktree on a new
+`finding/…` branch with the finding as its brief. It opens a pull request and stops there; it never
+merges.
 
 A finding is claimed before its worker starts, so two people on two machines cannot both start
 one. If someone else got there first, the dialog says so and the row shows their worker.

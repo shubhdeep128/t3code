@@ -25,9 +25,11 @@ function firingNote(firing: ScheduledTaskFiringView): string | null {
 export function FiringsList({
   firings,
   taskTitles,
+  showEnvironment,
 }: {
   firings: ReadonlyArray<WatcherFiringRow>;
   taskTitles: ReadonlyMap<string, string>;
+  showEnvironment: boolean;
 }) {
   if (firings.length === 0) {
     return (
@@ -60,9 +62,9 @@ export function FiringsList({
                 {formatRelativeTimeLabel(firing.firedAt)}
               </span>
             </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
-              <span>{environmentLabel}</span>
-              {firing.trigger !== "scheduled" ? <span>· {firing.trigger}</span> : null}
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 text-xs text-muted-foreground">
+              {showEnvironment ? <span>{environmentLabel}</span> : null}
+              {firing.trigger !== "scheduled" ? <span>{firing.trigger}</span> : null}
               {firing.threadId !== null ? (
                 <Link
                   to="/$environmentId/$threadId"
@@ -72,7 +74,7 @@ export function FiringsList({
                   Open thread
                 </Link>
               ) : null}
-              {note !== null ? <span className="min-w-0 flex-1 truncate">· {note}</span> : null}
+              {note !== null ? <span className="min-w-0 flex-1 truncate">{note}</span> : null}
             </div>
           </li>
         );

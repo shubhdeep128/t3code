@@ -177,10 +177,13 @@ export function WatcherCards({
   firings,
   findings,
   loading,
+  error,
   onRan,
 }: WatcherSummaryInput & {
   environments: ReadonlyArray<EnvironmentPresentation>;
+  /** No environment has sent its task list yet. */
   loading: boolean;
+  error: string | null;
   onRan: () => void;
 }) {
   const nowMs = useRelativeTimeTick(60_000);
@@ -222,10 +225,16 @@ export function WatcherCards({
             <EmptyMedia variant="icon">
               <RadarIcon />
             </EmptyMedia>
-            <EmptyTitle>{loading ? "Loading watchers…" : "No watchers yet"}</EmptyTitle>
+            <EmptyTitle>
+              {error !== null
+                ? "Could not load watchers"
+                : loading
+                  ? "Loading watchers…"
+                  : "No watchers yet"}
+            </EmptyTitle>
             <EmptyDescription>
-              A watcher is a scheduled task whose agent files what it finds. Create one here or in
-              Settings.
+              {error ??
+                "A watcher is a scheduled task whose agent files what it finds. Create one here or in Settings."}
             </EmptyDescription>
           </EmptyHeader>
         </Empty>

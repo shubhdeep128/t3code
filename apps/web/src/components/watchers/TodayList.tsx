@@ -7,45 +7,38 @@ import type { WatcherFindingRow } from "../../state/watchers";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { ProgressBadge, SeverityBadge } from "./findingPresentation";
-
-export function sourceLabel(
-  row: Pick<WatcherFindingRow, "environmentId" | "finding">,
-  taskTitles: ReadonlyMap<string, string>,
-): string {
-  const source = row.finding.source;
-  if (source.type === "thread") return "Filed from a thread";
-  return taskTitles.get(`${row.environmentId}:${source.taskId}`) ?? "Deleted watcher";
-}
+import { findingSourceLabel } from "./findingSource.logic";
 
 const FindingRow = memo(function FindingRow({
   row,
-  highlighted,
-  open,
+  selected,
   source,
-  onHighlight,
-  onOpen,
+  showEnvironment,
+  onSelect,
 }: {
   row: WatcherFindingRow;
-  highlighted: boolean;
-  open: boolean;
-  source: string;
-  onHighlight: (key: string) => void;
-  onOpen: (key: string) => void;
+  selected: boolean;
+  source: string | null;
+  showEnvironment: boolean;
+  onSelect: (key: string) => void;
 }) {
+  const notes = [
+    source,
+    showEnvironment ? row.environmentLabel : null,
+    row.finding.seenCount > 1 ? `seen ${row.finding.seenCount}×` : null,
+  ].filter((note) => note !== null);
   return (
     <li>
       <button
         type="button"
         data-finding-key={row.key}
-        aria-current={open ? "true" : undefined}
+        aria-current={selected ? "true" : undefined}
         className={cn(
           "flex w-full flex-col gap-1 rounded-md border-l-2 border-transparent px-3 py-2 text-left outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-          highlighted && "bg-accent",
-          open && "border-primary",
+          selected && "border-primary bg-accent",
         )}
-        onMouseEnter={() => onHighlight(row.key)}
-        onFocus={() => onHighlight(row.key)}
-        onClick={() => onOpen(row.key)}
+        onFocus={() => onSelect(row.key)}
+        onClick={() => onSelect(row.key)}
       >
         <span className="flex min-w-0 items-center gap-2">
           <span className="min-w-0 flex-1 truncate text-sm text-foreground">
@@ -58,15 +51,12 @@ const FindingRow = memo(function FindingRow({
         <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
           <SeverityBadge severity={row.finding.severity} />
           <ProgressBadge progress={row.progress} />
-          <span className="truncate">{source}</span>
-          <span aria-hidden>·</span>
-          <span className="truncate">{row.environmentLabel}</span>
-          {row.finding.seenCount > 1 ? (
-            <>
-              <span aria-hidden>·</span>
-              <span>seen {row.finding.seenCount}×</span>
-            </>
-          ) : null}
+          {notes.map((note, index) => (
+            <span key={note} className="flex min-w-0 items-center gap-1.5">
+              {index > 0 ? <span aria-hidden>·</span> : null}
+              <span className="truncate">{note}</span>
+            </span>
+          ))}
         </span>
       </button>
     </li>
@@ -76,29 +66,27 @@ const FindingRow = memo(function FindingRow({
 export function TodayList({
   groups,
   taskTitles,
-  highlightedKey,
-  openKey,
+  selectedKey,
+  showEnvironment,
   emptyTitle,
   emptyDescription,
-  onHighlight,
-  onOpen,
+  onSelect,
 }: {
   groups: ReadonlyArray<FindingGroup<WatcherFindingRow>>;
   taskTitles: ReadonlyMap<string, string>;
-  highlightedKey: string | null;
-  openKey: string | null;
+  selectedKey: string | null;
+  showEnvironment: boolean;
   emptyTitle: string;
   emptyDescription: string;
-  onHighlight: (key: string) => void;
-  onOpen: (key: string) => void;
+  onSelect: (key: string) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (highlightedKey === null) return;
+    if (selectedKey === null) return;
     listRef.current
-      ?.querySelector(`[data-finding-key="${CSS.escape(highlightedKey)}"]`)
+      ?.querySelector(`[data-finding-key="${CSS.escape(selectedKey)}"]`)
       ?.scrollIntoView({ block: "nearest" });
-  }, [highlightedKey]);
+  }, [selectedKey]);
 
   const shown = groups.filter((group) => group.items.length > 0);
   if (shown.length === 0) {
@@ -127,11 +115,10 @@ export function TodayList({
               <FindingRow
                 key={row.key}
                 row={row}
-                highlighted={row.key === highlightedKey}
-                open={row.key === openKey}
-                source={sourceLabel(row, taskTitles)}
-                onHighlight={onHighlight}
-                onOpen={onOpen}
+                selected={row.key === selectedKey}
+                source={findingSourceLabel(row.finding.source, row.environmentId, taskTitles)}
+                showEnvironment={showEnvironment}
+                onSelect={onSelect}
               />
             ))}
           </ul>

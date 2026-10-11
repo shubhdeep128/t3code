@@ -53,6 +53,7 @@ export function FindingDetailPanel({
   sourceTask,
   sourceFiring,
   environmentLabelFor,
+  showEnvironment,
   onRunReady,
   onFixOn,
   onClose,
@@ -62,6 +63,8 @@ export function FindingDetailPanel({
   sourceTask: ScheduledTask | null;
   sourceFiring: ScheduledTaskFiringView | null;
   environmentLabelFor: (environmentId: EnvironmentId) => string;
+  /** Environment names are noise with one machine connected. */
+  showEnvironment: boolean;
   /** Hands the page the action runner, so letter keys share the buttons' path. */
   onRunReady: (run: RunFindingAction | null) => void;
   onFixOn: (mode: StartFindingWorkMode) => void;
@@ -93,8 +96,12 @@ export function FindingDetailPanel({
             <SeverityBadge severity={row.finding.severity} />
             <ProgressBadge progress={row.progress} />
             <span>{project?.title ?? "Unknown project"}</span>
-            <span aria-hidden>·</span>
-            <span>{row.environmentLabel}</span>
+            {showEnvironment ? (
+              <>
+                <span aria-hidden>·</span>
+                <span>{row.environmentLabel}</span>
+              </>
+            ) : null}
             <span aria-hidden>·</span>
             <span>
               first seen {formatRelativeTimeLabel(row.finding.firstSeenAt)}
@@ -148,7 +155,7 @@ export function FindingDetailPanel({
                 params={{ environmentId: row.environmentId, threadId: source.threadId }}
                 className="truncate underline-offset-2 hover:underline"
               >
-                A thread on {row.environmentLabel}
+                {showEnvironment ? `A thread on ${row.environmentLabel}` : "A thread"}
               </Link>
             )}
           </dd>
@@ -174,9 +181,15 @@ export function FindingDetailPanel({
                   {row.work.title || "Untitled thread"}
                 </Link>
                 <span className="text-muted-foreground">
-                  on {environmentLabelFor(workThread.environmentId)}
-                  {row.work.branch ? ` · ${row.work.branch}` : ""}
-                  {row.finding.workAttempt > 1 ? ` · attempt ${row.finding.workAttempt}` : ""}
+                  {[
+                    showEnvironment || workThread.environmentId !== row.environmentId
+                      ? `on ${environmentLabelFor(workThread.environmentId)}`
+                      : null,
+                    row.work.branch,
+                    row.finding.workAttempt > 1 ? `attempt ${row.finding.workAttempt}` : null,
+                  ]
+                    .filter((part) => part !== null)
+                    .join(" · ")}
                 </span>
               </>
             )}

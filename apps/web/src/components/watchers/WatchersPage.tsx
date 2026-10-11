@@ -29,22 +29,16 @@ import { WatcherCards } from "./WatcherCards";
 import { actionForKey, findingActions } from "./findingPresentation";
 import type { StartFindingWorkMode } from "./fixOn.logic";
 
-type Tab = "today" | "watchers";
-type TodayFilter = "today" | "backlog" | "runs";
+type View = "today" | "backlog" | "runs" | "watchers";
 
-const TABS: ReadonlyArray<{ value: Tab; label: string }> = [
-  { value: "today", label: "Today" },
-  { value: "watchers", label: "Watchers" },
-];
-const FILTERS: ReadonlyArray<{ value: TodayFilter; label: string }> = [
+const VIEWS: ReadonlyArray<{ value: View; label: string }> = [
   { value: "today", label: "Today" },
   { value: "backlog", label: "Backlog" },
   { value: "runs", label: "Runs" },
+  { value: "watchers", label: "Watchers" },
 ];
 
-const isTab = (value: unknown): value is Tab => value === "today" || value === "watchers";
-const isFilter = (value: unknown): value is TodayFilter =>
-  value === "today" || value === "backlog" || value === "runs";
+const isView = (value: unknown): value is View => VIEWS.some((option) => option.value === value);
 
 /** Letter keys stay out of fields and open popups, like the Usage page's shortcuts. */
 function keyboardTargetIsFree(target: EventTarget | null) {
@@ -67,12 +61,13 @@ export function WatchersPage() {
   const navigateToMainApp = useNavigateToMainApp();
   useRecordMergedWork(findings.rows);
 
-  const [tab, setTab] = useState<Tab>("today");
-  const [filter, setFilter] = useState<TodayFilter>("today");
+  const [view, setView] = useState<View>("today");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [fixOn, setFixOn] = useState<{ row: WatcherFindingRow; mode: StartFindingWorkMode } | null>(
     null,
   );
+  const listView = view === "today" || view === "backlog";
+  const showEnvironment = environments.length > 1;
 
   const environmentLabels = useMemo(
     () => new Map(environments.map((entry) => [entry.environmentId, entry.label])),
@@ -81,23 +76,37 @@ export function WatchersPage() {
   const environmentLabelFor = (environmentId: EnvironmentId) =>
     environmentLabels.get(environmentId) ?? "another machine";
 
-  const taskTitles = useMemo(
+  const taskRows = useMemo(
     () =>
-      new Map(
-        tasks.values.flatMap(([environmentId, result]) =>
-          result.tasks.map((task) => [`${environmentId}:${task.id}`, task.title] as const),
-        ),
+      tasks.values.flatMap(([environmentId, result]) =>
+        result.tasks.map((task) => ({ environmentId, task })),
       ),
     [tasks.values],
   );
+  const taskTitles = useMemo(
+    () =>
+      new Map(
+        taskRows.map(({ environmentId, task }) => [`${environmentId}:${task.id}`, task.title]),
+      ),
+    [taskRows],
+  );
+  const taskFor = (row: WatcherFindingRow) =>
+    row.finding.source.type === "scheduled_task"
+      ? (taskRows.find(
+          (entry) =>
+            entry.environmentId === row.environmentId &&
+            row.finding.source.type === "scheduled_task" &&
+            entry.task.id === row.finding.source.taskId,
+        )?.task ?? null)
+      : null;
 
   const groups = useMemo(() => groupFindings(findings.rows), [findings.rows]);
   const shownGroups = useMemo(
     () =>
       groups.filter((group) =>
-        filter === "backlog" ? !TODAY_GROUP_KEYS.has(group.key) : TODAY_GROUP_KEYS.has(group.key),
+        view === "backlog" ? !TODAY_GROUP_KEYS.has(group.key) : TODAY_GROUP_KEYS.has(group.key),
       ),
-    [groups, filter],
+    [groups, view],
   );
   const orderedKeys = useMemo(
     () => shownGroups.flatMap((group) => group.items.map((row) => row.key)),
@@ -111,16 +120,7 @@ export function WatchersPage() {
       ? null
       : (findings.rows.find((row) => row.key === orderedKeys[0]) ?? null));
 
-  const sourceTask =
-    selected !== null && selected.finding.source.type === "scheduled_task"
-      ? (tasks.values
-          .find(([environmentId]) => environmentId === selected.environmentId)?.[1]
-          .tasks.find(
-            (task) =>
-              selected.finding.source.type === "scheduled_task" &&
-              task.id === selected.finding.source.taskId,
-          ) ?? null)
-      : null;
+  const sourceTask = selected === null ? null : taskFor(selected);
   const firingRows = useMemo(
     (): ReadonlyArray<WatcherFiringRow> =>
       firings.values.flatMap(([environmentId, result]) =>
@@ -158,14 +158,6 @@ export function WatchersPage() {
             project.id === selected.finding.projectId,
         ) ?? null);
 
-  const taskRows = useMemo(
-    () =>
-      tasks.values.flatMap(([environmentId, result]) =>
-        result.tasks.map((task) => ({ environmentId, task })),
-      ),
-    [tasks.values],
-  );
-
   const detailRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const keyActions = useRef<RunFindingAction | null>(null);
@@ -199,7 +191,7 @@ export function WatchersPage() {
         navigateToMainApp();
         return;
       }
-      if (tab !== "today" || filter === "runs" || fixOn !== null) return;
+      if (!listView || fixOn !== null) return;
       if (event.key === "j" || event.key === "k") {
         event.preventDefault();
         if (orderedKeys.length === 0) return;
@@ -224,7 +216,7 @@ export function WatchersPage() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [tab, filter, fixOn, orderedKeys, selected, navigateToMainApp]);
+  }, [listView, fixOn, orderedKeys, selected, navigateToMainApp]);
 
   const openFixOn = (row: WatcherFindingRow) => (mode: StartFindingWorkMode) =>
     setFixOn({ row, mode });
@@ -239,40 +231,22 @@ export function WatchersPage() {
       <ToggleGroup
         aria-label="Watchers view"
         variant="segmented"
-        value={[tab]}
+        value={[view]}
         onValueChange={(next) => {
-          if (isTab(next[0])) setTab(next[0]);
+          if (isView(next[0])) setView(next[0]);
         }}
       >
-        {TABS.map((option) => (
+        {VIEWS.map((option) => (
           <Toggle key={option.value} value={option.value}>
             {option.label}
           </Toggle>
         ))}
       </ToggleGroup>
-      {tab === "today" ? (
-        <ToggleGroup
-          aria-label="Today filter"
-          variant="segmented"
-          value={[filter]}
-          onValueChange={(next) => {
-            if (isFilter(next[0])) setFilter(next[0]);
-          }}
-        >
-          {FILTERS.map((option) => (
-            <Toggle key={option.value} value={option.value}>
-              {option.label}
-            </Toggle>
-          ))}
-        </ToggleGroup>
+      {showEnvironment ? (
+        <span className="ms-auto hidden min-w-0 truncate text-xs text-muted-foreground md:block">
+          {environments.length} environments
+        </span>
       ) : null}
-      <span className="ms-auto hidden min-w-0 truncate text-xs text-muted-foreground md:block">
-        {environments.length === 0
-          ? "No environment connected"
-          : environments.length === 1
-            ? environments[0]!.label
-            : `${environments.length} environments`}
-      </span>
     </div>
   );
 
@@ -291,39 +265,43 @@ export function WatchersPage() {
               <p className="text-sm text-muted-foreground">
                 Connect an environment to see what its watchers found.
               </p>
-            ) : tab === "watchers" ? (
+            ) : view === "watchers" ? (
               <WatcherCards
                 environments={environments}
                 tasks={taskRows}
                 firings={firingRows}
                 findings={findings.rows}
-                loading={tasks.isPending}
+                loading={tasks.values.length === 0 && tasks.error === null}
+                error={tasks.values.length === 0 ? tasks.error : null}
                 onRan={() => firings.refresh()}
               />
-            ) : filter === "runs" ? (
-              <FiringsList firings={firingRows} taskTitles={taskTitles} />
+            ) : view === "runs" ? (
+              <FiringsList
+                firings={firingRows}
+                taskTitles={taskTitles}
+                showEnvironment={showEnvironment}
+              />
             ) : (
               <div className="grid gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]">
                 <div ref={listRef} className="min-w-0" aria-busy={findings.isPending}>
                   <TodayList
                     groups={shownGroups}
                     taskTitles={taskTitles}
-                    highlightedKey={selected?.key ?? null}
-                    openKey={selected?.key ?? null}
+                    selectedKey={selected?.key ?? null}
+                    showEnvironment={showEnvironment}
                     emptyTitle={
-                      findings.isPending
+                      findings.isPending && findings.rows.length === 0
                         ? "Loading findings…"
-                        : filter === "backlog"
+                        : view === "backlog"
                           ? "Nothing in the backlog"
                           : "Nothing to do"
                     }
                     emptyDescription={
-                      filter === "backlog"
+                      view === "backlog"
                         ? "Backlogged and dismissed findings wait here until you restore them."
                         : "When a watcher files a finding, or a worker needs you, it shows here."
                     }
-                    onHighlight={setSelectedKey}
-                    onOpen={setSelectedKey}
+                    onSelect={setSelectedKey}
                   />
                 </div>
                 <div ref={detailRef} className="min-w-0">
@@ -335,6 +313,7 @@ export function WatchersPage() {
                       sourceTask={sourceTask}
                       sourceFiring={sourceFiring}
                       environmentLabelFor={environmentLabelFor}
+                      showEnvironment={showEnvironment}
                       onRunReady={registerKeyActions}
                       onFixOn={openFixOn(selected)}
                       onClose={() => setSelectedKey(null)}
@@ -351,17 +330,7 @@ export function WatchersPage() {
           row={fixOn.row}
           mode={fixOn.mode}
           environments={environments}
-          sourceTask={
-            fixOn.row.finding.source.type === "scheduled_task"
-              ? (tasks.values
-                  .find(([environmentId]) => environmentId === fixOn.row.environmentId)?.[1]
-                  .tasks.find(
-                    (task) =>
-                      fixOn.row.finding.source.type === "scheduled_task" &&
-                      task.id === fixOn.row.finding.source.taskId,
-                  ) ?? null)
-              : null
-          }
+          sourceTask={taskFor(fixOn.row)}
           onClose={() => setFixOn(null)}
         />
       ) : null}

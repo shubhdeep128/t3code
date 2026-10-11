@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   FindingClaimConflict,
@@ -5,20 +6,30 @@ import {
   type EnvironmentId,
   type ModelSelection,
   type ProjectId,
+  type ProviderInstanceId,
   type ScheduledTask,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { useId, useMemo, useState } from "react";
 
 import { useEnvironmentSettings } from "../../hooks/useSettings";
+import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import {
+  applyProviderInstanceSettings,
+  deriveProviderInstanceEntries,
+  sortProviderInstanceEntries,
+} from "../../providerInstances";
 import { useProjects } from "../../state/entities";
 import type { EnvironmentPresentation } from "../../state/environments";
-import { serverEnvironment } from "../../state/server";
+import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import type { WatcherFindingRow } from "../../state/watchers";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { WorktreeBaseBranchPicker } from "../WorktreeBaseBranchPicker";
+import { ProviderModelPicker } from "../chat/ProviderModelPicker";
+import { scheduledTaskDefaultModel } from "../settings/scheduledTasksSettings.logic";
+import { SETTINGS_PICKER_TRIGGER_CLASSNAME } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -90,11 +101,36 @@ export function FixOnDialog({
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
 
   const settings = useEnvironmentSettings(environmentId);
+  const providers =
+    useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
+  const instanceEntries = useMemo(
+    () =>
+      sortProviderInstanceEntries(
+        applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings),
+      ),
+    [providers, settings],
+  );
+  // The watcher's own model, when the chosen environment has it, then the
+  // project or environment default, then the first available model.
+  const [modelChoice, setModelChoice] = useState<ModelSelection | null>(null);
+  const sourceModel = sourceTask?.modelSelection ?? null;
+  const hasModel = (selection: ModelSelection) =>
+    instanceEntries.some(
+      (entry) =>
+        entry.instanceId === selection.instanceId &&
+        entry.models.some((model) => model.slug === selection.model),
+    );
   const modelSelection: ModelSelection | null =
-    sourceTask?.modelSelection ??
-    project?.defaultModelSelection ??
-    settings.defaultModelSelection ??
-    null;
+    modelChoice ??
+    (sourceModel !== null && hasModel(sourceModel) ? sourceModel : null) ??
+    scheduledTaskDefaultModel(settings, project, instanceEntries);
+  const activeInstanceId =
+    modelSelection?.instanceId ?? instanceEntries[0]?.instanceId ?? ("" as ProviderInstanceId);
+  const activeModel = modelSelection?.model ?? "";
+  const modelOptionsByInstance = useMemo(
+    () => getCustomModelOptionsByInstance(settings, providers, activeInstanceId, activeModel),
+    [settings, providers, activeInstanceId, activeModel],
+  );
   const runtimeMode = sourceTask?.runtimeMode ?? settings.defaultRuntimeMode;
   const interactionMode = sourceTask?.interactionMode ?? "default";
 
@@ -219,6 +255,7 @@ export function FixOnDialog({
                 if (next !== null) {
                   setEnvironmentId(next);
                   setProjectChoice(null);
+                  setModelChoice(null);
                 }
               }}
               disabled={phase.kind === "busy"}
@@ -284,11 +321,39 @@ export function FixOnDialog({
               The worker gets its own worktree on a new branch from here.
             </p>
           </div>
-          <p className="text-xs text-muted-foreground">
-            {modelSelection === null
-              ? "Set a default model for this project or environment first."
-              : `Model ${modelSelection.model}, ${runtimeMode.replace(/-/g, " ")}${sourceTask ? `, from ${sourceTask.title}` : ""}.`}
-          </p>
+          <div className="space-y-1.5">
+            <Label htmlFor={`${id}-model`}>Model</Label>
+            {instanceEntries.length === 0 ? (
+              <p className="text-sm text-destructive" role="status">
+                No provider is set up on {environment?.label ?? "this environment"}.
+              </p>
+            ) : (
+              <ProviderModelPicker
+                environmentId={environmentId}
+                disabled={phase.kind === "busy"}
+                activeInstanceId={activeInstanceId}
+                model={activeModel}
+                lockedProvider={null}
+                instanceEntries={instanceEntries}
+                modelOptionsByInstance={modelOptionsByInstance}
+                isComposerOwned={false}
+                triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                onInstanceModelChange={(instanceId, model) =>
+                  setModelChoice(
+                    sourceModel !== null &&
+                      sourceModel.instanceId === instanceId &&
+                      sourceModel.model === model
+                      ? sourceModel
+                      : { instanceId, model },
+                  )
+                }
+              />
+            )}
+            <p className="text-xs text-muted-foreground">
+              {runtimeMode.replace(/-/g, " ")}
+              {sourceTask && modelSelection === sourceModel ? `, as ${sourceTask.title} runs` : ""}
+            </p>
+          </div>
           {phase.kind === "conflict" ? (
             <p className="text-sm text-destructive" role="status">
               Work on this finding was started elsewhere first. Close this and the row will show it.

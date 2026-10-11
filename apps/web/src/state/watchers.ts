@@ -46,6 +46,7 @@ export interface WatcherFindingRow {
 
 export interface WatcherFindingsView {
   readonly rows: ReadonlyArray<WatcherFindingRow>;
+  /** Some environment has not sent its first list yet. */
   readonly isPending: boolean;
   readonly errors: ReadonlyArray<{ readonly label: string; readonly message: string }>;
 }
@@ -83,7 +84,6 @@ const watcherFindingsFamily = Atom.family((key: string) => {
       const result = get(
         serverEnvironment.findingsLive({ environmentId: environment.environmentId, input: {} }),
       );
-      isPending ||= result.waiting;
       if (result._tag === "Failure") {
         errors.push({
           label: environment.label,
@@ -91,7 +91,12 @@ const watcherFindingsFamily = Atom.family((key: string) => {
         });
       }
       const value = Option.getOrNull(AsyncResult.value(result));
-      if (value === null) continue;
+      // A live stream keeps `waiting` set between emissions, so pending means
+      // an environment has not sent its first list yet.
+      if (value === null) {
+        isPending ||= result._tag !== "Failure";
+        continue;
+      }
       for (const finding of value.findings) {
         let work: OrchestrationV2ThreadShell | null = null;
         let found: FindingWork = { kind: "unreachable" };
