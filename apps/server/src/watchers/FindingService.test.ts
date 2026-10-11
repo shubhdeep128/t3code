@@ -4,9 +4,11 @@ import {
   EnvironmentId,
   FindingId,
   ProjectId,
-  FindingsListResult,
+  FindingsSubscribeResult,
   ThreadId,
   type Finding,
+  type FindingProgress,
+  type FindingView,
   type OrchestrationV2ThreadShell,
   type PullRequestState,
 } from "@t3tools/contracts";
@@ -34,7 +36,7 @@ const BENCH_FINDINGS = 2_000;
 const BENCH_OPEN_AND_RECENT = 300;
 const at = (millis: number) => DateTime.formatIso(DateTime.makeUnsafe(T0 + millis));
 
-const encodeList = Schema.encodeEffect(Schema.fromJsonString(FindingsListResult));
+const encodeList = Schema.encodeEffect(Schema.fromJsonString(FindingsSubscribeResult));
 
 const HERE = EnvironmentId.make("environment:here");
 const ELSEWHERE = EnvironmentId.make("environment:elsewhere");
@@ -156,10 +158,15 @@ const filed = (overrides: Partial<Finding> = {}): Finding => ({
   ...overrides,
 });
 
+const listed = (
+  overrides: Partial<Finding> = {},
+  progress: FindingProgress = { kind: "new" },
+): FindingView => ({ ...filed(overrides), progress });
+
 it.effect("a repeated fingerprint returns the finding already filed and counts the sighting", () =>
   withFindings((findings) =>
     Effect.gen(function* () {
-      expect(yield* findings.report(crash)).toEqual({ finding: filed(), created: true });
+      expect(yield* findings.report(crash)).toEqual({ finding: listed(), created: true });
       yield* findings.update({
         findingId: FindingId.make("finding:1"),
         claim: { workThread: { environmentId: HERE, threadId: WORKER }, expectedWorkAttempt: 0 },
@@ -169,12 +176,15 @@ it.effect("a repeated fingerprint returns the finding already filed and counts t
       const repeat = yield* findings.report({ ...crash, detail: "Seen again." });
 
       expect(repeat).toEqual({
-        finding: filed({
-          workThread: { environmentId: HERE, threadId: WORKER },
-          workAttempt: 1,
-          lastSeenAt: at(60_000),
-          seenCount: 2,
-        }),
+        finding: listed(
+          {
+            workThread: { environmentId: HERE, threadId: WORKER },
+            workAttempt: 1,
+            lastSeenAt: at(60_000),
+            seenCount: 2,
+          },
+          { kind: "detached" },
+        ),
         created: false,
       });
       expect((yield* findings.list({})).findings).toHaveLength(1);
@@ -191,7 +201,7 @@ it.effect("a dismissed fingerprint stays dismissed when it is reported again", (
       const repeat = yield* findings.report(crash);
 
       expect(repeat).toEqual({
-        finding: filed({ triage: "dismissed", seenCount: 2 }),
+        finding: listed({ triage: "dismissed", seenCount: 2 }, { kind: "dismissed" }),
         created: false,
       });
       expect((yield* findings.list({})).findings.map((finding) => finding.findingId)).toEqual([
@@ -217,7 +227,7 @@ it.effect("a fingerprint whose local work merged opens a new finding that names 
       const reopened = yield* findings.report(crash);
 
       expect(reopened).toEqual({
-        finding: filed({
+        finding: listed({
           findingId: FindingId.make("finding:2"),
           detail:
             "Stack trace from the 06:00 run.\n\nPrevious finding, whose fix merged: finding:1",
@@ -246,7 +256,10 @@ it.effect("work on another machine counts as merged once a client records workMe
           expectedWorkAttempt: 0,
         },
       });
-      expect((yield* findings.report(crash)).created).toBe(false);
+      expect(yield* findings.report(crash)).toMatchObject({
+        created: false,
+        finding: { progress: { kind: "unknown" } },
+      });
 
       expect(
         (yield* findings
@@ -261,12 +274,15 @@ it.effect("work on another machine counts as merged once a client records workMe
       expect(reopened.finding.findingId).toBe("finding:2");
       expect((yield* findings.list({ triage: "open" })).findings).toEqual([
         reopened.finding,
-        filed({
-          workThread: { environmentId: ELSEWHERE, threadId: WORKER },
-          workAttempt: 1,
-          workMergedAt: at(5_000),
-          seenCount: 2,
-        }),
+        listed(
+          {
+            workThread: { environmentId: ELSEWHERE, threadId: WORKER },
+            workAttempt: 1,
+            workMergedAt: at(5_000),
+            seenCount: 2,
+          },
+          { kind: "merged", pr: null },
+        ),
       ]);
       const reclaimed = yield* findings.update({
         findingId: FindingId.make("finding:1"),
@@ -285,7 +301,7 @@ it.effect("two watchers reporting the same new problem at once file it once", ()
       });
 
       expect(results.map(({ created }) => created).toSorted()).toEqual([false, true]);
-      expect(yield* findings.list({})).toEqual({ findings: [filed({ seenCount: 2 })] });
+      expect(yield* findings.list({})).toEqual({ findings: [listed({ seenCount: 2 })] });
     }),
   ),
 );
@@ -444,7 +460,7 @@ it.effect("findings outlive a restart of the service", () => {
   return TestClock.setTime(T0).pipe(
     Effect.andThen(started((findings) => findings.report(crash))),
     Effect.andThen(started((findings) => findings.list({}))),
-    Effect.map((listed) => expect(listed).toEqual({ findings: [filed()] })),
+    Effect.map((result) => expect(result).toEqual({ findings: [listed()] })),
     Effect.provide(SqlitePersistence.layerMemory),
   );
 });
