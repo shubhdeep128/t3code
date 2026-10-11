@@ -347,7 +347,17 @@ import {
   ScheduledTaskUpsertInput,
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
-import { ScheduledTaskListFiringsInput, ScheduledTaskListFiringsResult } from "./watchers.ts";
+import {
+  FindingClaimConflict,
+  FindingError,
+  FindingsListInput,
+  FindingsListResult,
+  FindingsSubscribeInput,
+  FindingsUpdateInput,
+  FindingsUpdateResult,
+  ScheduledTaskListFiringsInput,
+  ScheduledTaskListFiringsResult,
+} from "./watchers.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
   ProjectCloneActionInput,
@@ -524,6 +534,9 @@ export const WS_METHODS = {
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
   scheduledTasksListFirings: "scheduledTasks.listFirings",
+  findingsList: "findings.list",
+  findingsSubscribe: "findings.subscribe",
+  findingsUpdate: "findings.update",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -1852,6 +1865,26 @@ const WsScheduledTasksListFiringsRpc = Rpc.make(WS_METHODS.scheduledTasksListFir
   error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
 });
 
+const WsFindingsListRpc = Rpc.make(WS_METHODS.findingsList, {
+  payload: FindingsListInput,
+  success: FindingsListResult,
+  error: Schema.Union([FindingError, EnvironmentAuthorizationError]),
+});
+
+/** Open findings and those seen in the last 14 days: one list on subscribe, then a fresh one after every change. */
+const WsFindingsSubscribeRpc = Rpc.make(WS_METHODS.findingsSubscribe, {
+  payload: FindingsSubscribeInput,
+  success: FindingsListResult,
+  error: Schema.Union([FindingError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+const WsFindingsUpdateRpc = Rpc.make(WS_METHODS.findingsUpdate, {
+  payload: FindingsUpdateInput,
+  success: FindingsUpdateResult,
+  error: Schema.Union([FindingError, FindingClaimConflict, EnvironmentAuthorizationError]),
+});
+
 const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess, {
   payload: Schema.Struct({}),
   success: AuthAccessStreamEvent,
@@ -1945,6 +1978,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,
   WsScheduledTasksListFiringsRpc,
+  WsFindingsListRpc,
+  WsFindingsSubscribeRpc,
+  WsFindingsUpdateRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
   WsServerGetBackgroundPolicyRpc,
