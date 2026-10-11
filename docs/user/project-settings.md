@@ -65,6 +65,11 @@ Webhook tasks only run when their URL is called, so they can't be run
 immediately.
 Leaving an edited form asks before discarding unsaved changes.
 
+Each time a task fires, the firing and the outcome of the run it started show
+in [Watchers](watchers.md) on web and desktop, together with anything the agent
+reported with `report_finding`. A task does not fire again while its previous
+run is still going; the skipped firing is recorded there too.
+
 ## Webhook automations
 
 In **Settings → Scheduled tasks**, choose **On webhook**

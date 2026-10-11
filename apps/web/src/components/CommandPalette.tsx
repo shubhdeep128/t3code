@@ -72,6 +72,7 @@ import {
   MonitorIcon,
   MoonIcon,
   PaletteIcon,
+  RadarIcon,
   RotateCcwIcon,
   SettingsIcon,
   SquarePenIcon,
@@ -2168,6 +2169,17 @@ function OpenCommandPaletteDialog(props: {
     shortcutCommand: "usage.open",
     run: async () => {
       await navigate({ to: "/usage" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:watchers",
+    searchTerms: ["watchers", "watcher", "findings", "scheduled", "tasks", "automations", "today"],
+    title: "Open Watchers",
+    icon: <RadarIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/watchers" });
     },
   });
 
