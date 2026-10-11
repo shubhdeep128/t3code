@@ -355,6 +355,7 @@ import {
   FindingsListInput,
   FindingsListResult,
   FindingsSubscribeInput,
+  FindingsSubscribeResult,
   FindingsUpdateInput,
   FindingsUpdateResult,
   ScheduledTaskListFiringsInput,
@@ -1894,7 +1895,7 @@ const WsFindingsListRpc = Rpc.make(WS_METHODS.findingsList, {
 /** Open findings whose work has not merged, and any seen in the last 14 days: one list on subscribe, then a fresh one after every change. */
 const WsFindingsSubscribeRpc = Rpc.make(WS_METHODS.findingsSubscribe, {
   payload: FindingsSubscribeInput,
-  success: FindingsListResult,
+  success: FindingsSubscribeResult,
   error: Schema.Union([FindingError, EnvironmentAuthorizationError]),
   stream: true,
 });

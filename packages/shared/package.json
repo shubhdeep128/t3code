@@ -359,6 +359,10 @@
       "types": "./src/usageMerge.ts",
       "import": "./src/usageMerge.ts"
     },
+    "./findingProgress": {
+      "types": "./src/findingProgress.ts",
+      "import": "./src/findingProgress.ts"
+    },
     "./usageFormat": {
       "types": "./src/usageFormat.ts",
       "import": "./src/usageFormat.ts"

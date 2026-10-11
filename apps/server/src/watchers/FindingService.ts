@@ -27,17 +27,18 @@ import {
   FindingId,
   FindingSource,
   type FindingSeverity,
+  type FindingView,
   type FindingsListInput,
   type FindingsListResult,
+  type FindingsSubscribeResult,
   type FindingsUpdateInput,
   type FindingsUpdateResult,
   type OrchestrationV2ThreadShell,
   type ProjectId,
   type RunId,
   type ThreadId,
-  type ThreadPullRequestLink,
 } from "@t3tools/contracts";
-import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
+import { deriveFindingProgress, type FindingWork } from "@t3tools/shared/findingProgress";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -46,19 +47,6 @@ import * as ScheduledTaskFirings from "../scheduledTasks/ScheduledTaskFirings.ts
 
 const RECENT_DAYS = 14;
 const LIST_LIMIT = 500;
-
-/** The pull request the worker opened from its own branch, else the newest one it linked itself. */
-const workerPullRequest = (
-  shell: OrchestrationV2ThreadShell,
-): ThreadPullRequestLink | undefined => {
-  const links = visibleThreadPullRequests(shell.pullRequests ?? []);
-  return (
-    links.find((link) => shell.branch !== null && link.snapshot?.headBranch === shell.branch) ??
-    links
-      .filter((link) => link.source !== "stack")
-      .toSorted((left, right) => right.linkedAt.localeCompare(left.linkedAt))[0]
-  );
-};
 
 export class FindingService extends Context.Service<
   FindingService,
@@ -77,14 +65,14 @@ export class FindingService extends Context.Service<
       readonly title: string;
       readonly detail: string;
       readonly severity: FindingSeverity;
-    }) => Effect.Effect<{ readonly finding: Finding; readonly created: boolean }, FindingError>;
+    }) => Effect.Effect<{ readonly finding: FindingView; readonly created: boolean }, FindingError>;
     /** Newest sighting first, at most 500. */
     readonly list: (input: FindingsListInput) => Effect.Effect<FindingsListResult, FindingError>;
     /**
      * Open findings whose work has not merged, and any seen in the last 14
      * days, then the same again after every change.
      */
-    readonly subscribeList: () => Stream.Stream<FindingsListResult, FindingError>;
+    readonly subscribeList: () => Stream.Stream<FindingsSubscribeResult, FindingError>;
     readonly update: (
       input: FindingsUpdateInput,
     ) => Effect.Effect<FindingsUpdateResult, FindingError | FindingClaimConflict>;
@@ -184,22 +172,22 @@ const make = Effect.gen(function* () {
     ON fork_watcher_findings (project_id, fingerprint)
   `;
 
-  /**
-   * When the finding's work merged, or null. Work in another environment
-   * counts as merged only once a client that can see it records `workMergedAt`.
-   */
-  const workMergedAt = Effect.fn("FindingService.workMergedAt")(function* (
-    finding: Finding,
-    now: string,
-  ) {
-    if (finding.workMergedAt !== null) return finding.workMergedAt;
-    const work = finding.workThread;
-    if (work === null || work.environmentId !== (yield* environment.getEnvironmentId)) {
-      return null;
-    }
-    const shell = yield* threads.getThreadShell(work.threadId);
-    const own = shell === null ? undefined : workerPullRequest(shell);
-    return own?.snapshot?.state === "merged" ? (own.snapshot.mergedAt ?? now) : null;
+  const withProgress = Effect.fn("FindingService.withProgress")(function* (finding: Finding) {
+    const ref = finding.workThread;
+    const shell =
+      ref?.environmentId === (yield* environment.getEnvironmentId)
+        ? yield* threads.getThreadShell(ref.threadId)
+        : undefined;
+    const work: FindingWork =
+      shell === undefined
+        ? { kind: "unreachable" }
+        : shell === null
+          ? { kind: "missing" }
+          : { kind: "shell", shell };
+    return {
+      ...finding,
+      progress: deriveFindingProgress(finding, work, yield* DateTime.now),
+    } satisfies FindingView;
   });
 
   const runBeforeRestartContinuations = Effect.fn("FindingService.runBeforeRestartContinuations")(
@@ -254,9 +242,9 @@ const make = Effect.gen(function* () {
       ORDER BY rowid DESC
       LIMIT 1
     `;
-    const previous = newestRow === undefined ? undefined : yield* fromRow(newestRow);
-    const previousMergedAt = previous === undefined ? null : yield* workMergedAt(previous, now);
-    if (previous !== undefined && previousMergedAt === null) {
+    const previous =
+      newestRow === undefined ? undefined : yield* withProgress(yield* fromRow(newestRow));
+    if (previous !== undefined && previous.progress.kind !== "merged") {
       const [seenRow] = yield* sql<FindingRow>`
         UPDATE fork_watcher_findings
         SET last_seen_at = ${now}, seen_count = seen_count + 1
@@ -269,12 +257,18 @@ const make = Effect.gen(function* () {
           findingId: previous.findingId,
         });
       }
-      return { finding: yield* fromRow(seenRow), created: false };
+      return {
+        finding: { ...(yield* fromRow(seenRow)), progress: previous.progress },
+        created: false,
+      };
     }
-    if (previous !== undefined && previous.workMergedAt === null) {
+    if (previous?.progress.kind === "merged" && previous.workMergedAt === null) {
       yield* sql`
         UPDATE fork_watcher_findings
-        SET work_merged_at = COALESCE(work_merged_at, ${previousMergedAt})
+        SET work_merged_at = COALESCE(
+          work_merged_at,
+          ${previous.progress.pr?.snapshot?.mergedAt ?? now}
+        )
         WHERE finding_id = ${previous.findingId}
       `;
     }
@@ -310,7 +304,7 @@ const make = Effect.gen(function* () {
         NULL, NULL, 0, NULL, ${now}, ${now}, 1
       )
     `;
-    return { finding, created: true };
+    return { finding: yield* withProgress(finding), created: true };
   });
 
   const report: FindingService["Service"]["report"] = (input) =>
@@ -348,7 +342,9 @@ const make = Effect.gen(function* () {
         ),
       );
       return {
-        findings: yield* Effect.forEach(rows, fromRow).pipe(
+        findings: yield* Effect.forEach(rows, (row) =>
+          fromRow(row).pipe(Effect.flatMap(withProgress)),
+        ).pipe(
           Effect.mapError(
             (cause) => new FindingError({ message: "Could not read a stored finding.", cause }),
           ),
