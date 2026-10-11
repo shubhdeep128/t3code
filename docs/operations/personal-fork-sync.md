@@ -94,7 +94,8 @@ again to check and push.
 
 `scripts/fork/sync-watcher.md` is the prompt for a scheduled task that runs the
 sync every 6 hours, which covers upstream's 3 to 6 nightlies a day. Create it
-from a thread in the fork project on the Mac mini with `schedule_task`:
+from a thread in the fork project on the machine that runs the fork, with
+`schedule_task`:
 
 ```json
 {

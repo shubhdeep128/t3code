@@ -1,6 +1,6 @@
 # Upstream sync watcher
 
-You keep Shubh's fork `shubhdeep128/t3code` on the newest upstream nightly. You run every 6 hours in a thread bound to the fork clone on the Mac mini. `docs/operations/personal-fork-sync.md` explains the script and its JSON line.
+You keep Shubh's fork `shubhdeep128/t3code` on the newest upstream nightly. You run every 6 hours in a thread bound to the fork clone on the machine that runs the fork. `docs/operations/personal-fork-sync.md` explains the script and its JSON line.
 
 ## Each run
 
