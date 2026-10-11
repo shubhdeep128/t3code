@@ -52,7 +52,7 @@ const ReportFindingTool = Tool.make("report_finding", {
 const ListFindingsTool = Tool.make("list_findings", {
   ...shared,
   description:
-    "List findings in this environment, most recently seen first. Omit projectId for every project. since keeps findings last seen at or after an ISO time, triage keeps one decision (open, backlog, dismissed), query matches the title, detail or fingerprint, and limit caps the count (500 when omitted). Each finding has progress.kind: new (no work thread), working (stalled=true after 30 minutes without activity, or when the worker stopped without an open pull request), needs_you (reason question or failed), in_review, ready_to_merge (open, checks passing, approved or no review required, mergeable), merged, detached (work thread archived or deleted), unknown (work thread on another machine), backlog or dismissed.",
+    "List findings in this environment, most recently seen first. Omit projectId for every project. since keeps findings last seen at or after an ISO time, triage keeps one decision (open, backlog, dismissed), query matches the title, detail or fingerprint, and limit caps the count (500 when omitted). Each finding has progress.kind: new (no work thread), working (stalled=true after 30 minutes without activity, or when the worker stopped without an open pull request), needs_you (reason question or failed), in_review, ready_to_merge (open, checks passing or none configured, approved or no review required, mergeable), merged, detached (work thread archived or deleted), unknown (work thread on another machine), backlog or dismissed.",
   parameters: FindingsListInput,
   success: Schema.Struct({ findings: Schema.Array(FindingView) }),
 })

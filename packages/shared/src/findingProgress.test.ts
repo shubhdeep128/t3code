@@ -211,7 +211,6 @@ describe("deriveFindingProgress", () => {
       pullRequest(7, { isDraft: true }),
       pullRequest(7, { checksState: "failing" }),
       pullRequest(7, { checksState: "pending" }),
-      pullRequest(7, { checksState: null }),
       pullRequest(7, { mergeability: "conflicting" }),
       pullRequest(7, { reviewDecision: "changes-requested" }),
       { ...pullRequest(7), snapshot: null },
@@ -220,15 +219,41 @@ describe("deriveFindingProgress", () => {
       notReady.map(
         (pr) => deriveFindingProgress(claimed, settled({ pullRequests: [pr] }), NOW).kind,
       ),
-    ).toEqual([
-      "in_review",
-      "in_review",
-      "in_review",
-      "in_review",
-      "in_review",
-      "in_review",
-      "in_review",
-    ]);
+    ).toEqual(["in_review", "in_review", "in_review", "in_review", "in_review", "in_review"]);
+  });
+
+  it("ready_to_merge: a synced pull request whose head commit has no checks at all", () => {
+    const noChecks = pullRequest(7, { checksState: null });
+    expect(deriveFindingProgress(claimed, settled({ pullRequests: [noChecks] }), NOW)).toEqual({
+      kind: "ready_to_merge",
+      pr: noChecks,
+    });
+  });
+
+  it("in_review: a snapshot whose host never reported checks", () => {
+    const checksNotReported: ThreadPullRequestLink = {
+      host: "github.com",
+      repository: "acme/app",
+      number: 7,
+      url: "https://github.com/acme/app/pull/7",
+      source: "agent",
+      linkedAt: "2026-10-11T10:00:00.000Z",
+      snapshot: {
+        state: "open",
+        title: "Fix the checkout crash",
+        headBranch: "fix/crash",
+        baseBranch: "main",
+        isDraft: false,
+        updatedAt: null,
+        syncedAt: "2026-10-11T11:00:00.000Z",
+        reviewDecision: "approved",
+        mergeability: "mergeable",
+      },
+      stack: null,
+    };
+    expect(
+      deriveFindingProgress(claimed, settled({ pullRequests: [checksNotReported] }), NOW),
+    ).toEqual({ kind: "in_review", pr: checksNotReported });
   });
 
   it("ready_to_merge: open, green and mergeable, approved or needing no review", () => {

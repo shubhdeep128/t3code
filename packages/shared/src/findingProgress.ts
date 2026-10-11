@@ -48,11 +48,13 @@ function workerPullRequest(shell: FindingWorkShell): ThreadPullRequestLink | nul
   );
 }
 
+// A synced snapshot stores `checksState: null` when the head commit reports no
+// checks at all. The field is absent when the host's read never reported checks.
 const readyToMerge = (snapshot: ThreadPullRequestSnapshot | null) =>
   snapshot !== null &&
   !snapshot.isDraft &&
   snapshot.mergeability === "mergeable" &&
-  snapshot.checksState === "passing" &&
+  (snapshot.checksState === "passing" || snapshot.checksState === null) &&
   (snapshot.reviewDecision == null || snapshot.reviewDecision === "approved");
 
 /**
