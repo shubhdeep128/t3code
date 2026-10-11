@@ -7,6 +7,7 @@ import {
   PencilIcon,
   PlayIcon,
   PlusIcon,
+  RadarIcon,
   Trash2Icon,
 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -257,18 +258,24 @@ export function ScheduledTasksSettings(target: {
         title="Scheduled tasks"
         variant="plain"
         headerAction={
-          <Button
-            size="xs"
-            variant="ghost-muted"
-            disabled={!defaultEnvironment || !canCreate}
-            onClick={() =>
-              defaultEnvironment &&
-              setEditor({ environmentId: defaultEnvironment.environmentId, task: null })
-            }
-          >
-            <PlusIcon className="size-3" />
-            New task
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button size="xs" variant="ghost-muted" render={<Link to="/watchers" />}>
+              <RadarIcon className="size-3" />
+              Open Watchers
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost-muted"
+              disabled={!defaultEnvironment || !canCreate}
+              onClick={() =>
+                defaultEnvironment &&
+                setEditor({ environmentId: defaultEnvironment.environmentId, task: null })
+              }
+            >
+              <PlusIcon className="size-3" />
+              New task
+            </Button>
+          </div>
         }
       >
         {scope.kind === "unavailable" ? (
@@ -768,7 +775,7 @@ function WebhookDeliveryMode({ environmentId }: { readonly environmentId: Enviro
   );
 }
 
-function ScheduledTaskEditorDialog({
+export function ScheduledTaskEditorDialog({
   initialEnvironmentId,
   task,
   onClose,

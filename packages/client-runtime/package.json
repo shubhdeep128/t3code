@@ -227,6 +227,14 @@
       "types": "./src/state/usageProgress.ts",
       "default": "./src/state/usageProgress.ts"
     },
+    "./state/finding-groups": {
+      "types": "./src/state/findingGroups.ts",
+      "default": "./src/state/findingGroups.ts"
+    },
+    "./state/watcher-cards": {
+      "types": "./src/state/watcherCards.ts",
+      "default": "./src/state/watcherCards.ts"
+    },
     "./state/server": {
       "types": "./src/state/server.ts",
       "default": "./src/state/server.ts"
