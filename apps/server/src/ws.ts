@@ -123,6 +123,7 @@ import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts"
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as FindingService from "./watchers/FindingService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import {
   archivedShellStreamItemFromThreadShell,
@@ -1240,6 +1241,7 @@ const layerWsRpc = (
       const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
+      const findings = yield* FindingService.FindingService;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const pullRequests = yield* PullRequestService.PullRequestService;
       const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
@@ -2100,6 +2102,12 @@ const layerWsRpc = (
             Effect.andThen(scheduledTasks.getWebhookDelivery(input)),
           ),
         [WS_METHODS.scheduledTasksListFirings]: (input) => scheduledTasks.listFirings(input),
+        [WS_METHODS.findingsList]: (input) => findings.list(input),
+        [WS_METHODS.findingsSubscribe]: (_input) => findings.subscribeList(),
+        [WS_METHODS.findingsUpdate]: (input) =>
+          Effect.annotateCurrentSpan({ "finding.id": input.findingId }).pipe(
+            Effect.andThen(findings.update(input)),
+          ),
         [WS_METHODS.serverProbe]: (_input) => Effect.succeed({}),
         [WS_METHODS.serverGetConfig]: (_input) => loadServerConfig({ usageLimitsCommand: false }),
         [WS_METHODS.serverSearchAcpRegistry]: (input) =>
@@ -3169,6 +3177,7 @@ export const layer = Layer.unwrap(
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
+    const findings = yield* FindingService.FindingService;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3243,6 +3252,8 @@ export const layer = Layer.unwrap(
                   reviewGuides,
                 ),
               ),
+              // Shared with MCP, so a finding an agent reports reaches subscribed clients.
+              Layer.provide(Layer.succeed(FindingService.FindingService, findings)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(
