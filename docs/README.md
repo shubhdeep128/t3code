@@ -17,6 +17,7 @@
 - [Use T3 Code as your default browser](./user/default-browser.md)
 - [Devices](./user/devices.md)
 - [Usage and limits](./user/usage.md)
+- [Watchers](./user/watchers.md)
 - [Product usage data](./user/telemetry.md)
 - [Remote access](./user/remote-access.md)
 - [Outside agents (MCP)](./user/outside-agents.md)
