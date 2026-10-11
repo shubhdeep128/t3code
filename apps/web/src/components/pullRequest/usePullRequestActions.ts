@@ -128,8 +128,12 @@ export function usePullRequestActionRunner({
   const [actionPending, setActionPending] = useState(false);
   const pendingRef = useRef(false);
 
-  const perform = async (action: PullRequestAction, method?: PullRequestMergeMethod) => {
-    if (pendingRef.current || reference === null) return;
+  /** Resolves to whether the host accepted the action; failures are already toasted. */
+  const perform = async (
+    action: PullRequestAction,
+    method?: PullRequestMergeMethod,
+  ): Promise<boolean> => {
+    if (pendingRef.current || reference === null) return false;
     pendingRef.current = true;
     setActionPending(true);
     const result = await runAction({
@@ -151,10 +155,11 @@ export function usePullRequestActionRunner({
           ACTION_FAILURE_HINTS[action],
         ),
       });
-      return;
+      return false;
     }
     toastManager.add({ type: "success", title: ACTION_SUCCESS_LABELS[action] });
     onSuccess?.(action);
+    return true;
   };
 
   return { actionPending, perform };
