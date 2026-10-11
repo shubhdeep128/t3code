@@ -1116,6 +1116,16 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:scheduled-tasks:live",
       tag: WS_METHODS.scheduledTasksSubscribe,
     }),
+    scheduledTaskFirings: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:scheduled-task:firings",
+      tag: WS_METHODS.scheduledTasksListFirings,
+      staleTimeMs: 15_000,
+    }),
+    /** Open findings and the last 14 days: snapshot on subscribe, fresh list after every change. */
+    findingsLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:findings:live",
+      tag: WS_METHODS.findingsSubscribe,
+    }),
     // A cold transcript scan is measured in seconds, so keep the result around
     // long enough that switching windows or re-rendering does not rescan.
     // Slow sources answer from cache first: that summary stays on screen, with
@@ -1341,6 +1351,12 @@ export function createServerEnvironmentAtoms<R, E>(
     runScheduledTaskNow: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:run-now",
       tag: WS_METHODS.scheduledTasksRunNow,
+    }),
+    // Off the config lane too: a Fix on claim races a claim from another
+    // client, so it must not wait behind settings edits.
+    updateFinding: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:finding:update",
+      tag: WS_METHODS.findingsUpdate,
     }),
     rotateScheduledTaskWebhookToken: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:rotate-webhook-token",
