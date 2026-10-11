@@ -114,6 +114,10 @@ export const make = Effect.gen(function* () {
     CREATE INDEX IF NOT EXISTS fork_watcher_firings_task_fired_at
     ON fork_watcher_firings (task_id, fired_at)
   `;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS fork_watcher_firings_message_id
+    ON fork_watcher_firings (message_id)
+  `;
 
   // A thread whose records cannot be read reports no run, so its firings read
   // as unknown and never block the next one.
@@ -309,5 +313,14 @@ export const make = Effect.gen(function* () {
       );
     });
 
-  return { begin, settle, skip, previousRunActive, list };
+  /** The firing whose prompt is this message, which is how a run finds the firing that started it. */
+  const firingForMessage = (messageId: MessageId) =>
+    Effect.gen(function* () {
+      const [row] = yield* sql<FiringRow>`
+        SELECT * FROM fork_watcher_firings WHERE message_id = ${messageId} LIMIT 1
+      `;
+      return row === undefined ? undefined : yield* decodeRow(row);
+    });
+
+  return { begin, settle, skip, previousRunActive, list, firingForMessage };
 });
