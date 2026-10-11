@@ -20,6 +20,8 @@ const FindingRow = memo(function FindingRow({
   selected: boolean;
   source: string | null;
   showEnvironment: boolean;
+  /** The minute, so the relative age re-renders with the clock and not more often. */
+  nowMs: number;
   onSelect: (key: string) => void;
 }) {
   const notes = [
@@ -68,6 +70,7 @@ export function TodayList({
   taskTitles,
   selectedKey,
   showEnvironment,
+  nowMs,
   emptyTitle,
   emptyDescription,
   onSelect,
@@ -76,6 +79,7 @@ export function TodayList({
   taskTitles: ReadonlyMap<string, string>;
   selectedKey: string | null;
   showEnvironment: boolean;
+  nowMs: number;
   emptyTitle: string;
   emptyDescription: string;
   onSelect: (key: string) => void;
@@ -118,6 +122,7 @@ export function TodayList({
                 selected={row.key === selectedKey}
                 source={findingSourceLabel(row.finding.source, row.environmentId, taskTitles)}
                 showEnvironment={showEnvironment}
+                nowMs={nowMs}
                 onSelect={onSelect}
               />
             ))}

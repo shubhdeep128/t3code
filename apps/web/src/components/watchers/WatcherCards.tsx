@@ -42,11 +42,13 @@ const noop = () => {};
 function WatcherCard({
   summary,
   environment,
+  showEnvironment,
   onEdit,
   onRan,
 }: {
   summary: WatcherSummary;
   environment: EnvironmentPresentation | null;
+  showEnvironment: boolean;
   onEdit: () => void;
   onRan: () => void;
 }) {
@@ -87,12 +89,16 @@ function WatcherCard({
           <h3 className="truncate text-sm font-medium text-foreground">{task.title}</h3>
           <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
             <span>{scheduleLabel(task.schedule)}</span>
-            <span aria-hidden>·</span>
-            <EnvironmentMachineIcon
-              kind={resolveEnvironmentMachineKind(environment?.serverConfig ?? null)}
-              className="size-3"
-            />
-            <span className="truncate">{environment?.label ?? "Unknown environment"}</span>
+            {showEnvironment ? (
+              <>
+                <span aria-hidden>·</span>
+                <EnvironmentMachineIcon
+                  kind={resolveEnvironmentMachineKind(environment?.serverConfig ?? null)}
+                  className="size-3"
+                />
+                <span className="truncate">{environment?.label ?? "Unknown environment"}</span>
+              </>
+            ) : null}
           </p>
         </div>
         <Switch
@@ -178,12 +184,14 @@ export function WatcherCards({
   findings,
   loading,
   error,
+  showEnvironment,
   onRan,
 }: WatcherSummaryInput & {
   environments: ReadonlyArray<EnvironmentPresentation>;
   /** No environment has sent its task list yet. */
   loading: boolean;
   error: string | null;
+  showEnvironment: boolean;
   onRan: () => void;
 }) {
   const nowMs = useRelativeTimeTick(60_000);
@@ -245,6 +253,7 @@ export function WatcherCards({
               key={`${summary.environmentId}:${summary.task.id}`}
               summary={summary}
               environment={labelFor.get(summary.environmentId) ?? null}
+              showEnvironment={showEnvironment}
               onEdit={() => setEditor({ environmentId: summary.environmentId, task: summary.task })}
               onRan={onRan}
             />

@@ -56,6 +56,16 @@ interface FindingsKey {
   readonly label: string;
 }
 
+/**
+ * The minute, for stalled workers and relative ages. Ticks only while the
+ * page reads it, and once for every row at a time.
+ */
+export const watcherClockAtom = Atom.make((get) => {
+  const timer = setInterval(() => get.setSelf(Date.now()), 60_000);
+  get.addFinalizer(() => clearInterval(timer));
+  return Date.now();
+}).pipe(Atom.withLabel("web-watchers:clock"));
+
 const progressEqual = (a: FindingProgress, b: FindingProgress) =>
   a.kind === b.kind &&
   ("stalled" in a ? a.stalled === (b as typeof a).stalled : true) &&
@@ -74,7 +84,7 @@ const watcherFindingsFamily = Atom.family((key: string) => {
   return Atom.make((get): WatcherFindingsView => {
     const environments = JSON.parse(key) as ReadonlyArray<FindingsKey>;
     const connected = new Set(environments.map((environment) => environment.environmentId));
-    const now = DateTime.nowUnsafe();
+    const now = DateTime.makeUnsafe(get(watcherClockAtom));
     const next = new Map<string, WatcherFindingRow>();
     const rows: WatcherFindingRow[] = [];
     const errors: Array<{ label: string; message: string }> = [];
@@ -193,9 +203,9 @@ export function useWatcherFirings(environments: ReadonlyArray<EnvironmentPresent
 }
 
 /**
- * A finding's own server cannot see a worker on another machine merge, so the
- * client that sees it writes `workMergedAt` once. The row then reads merged on
- * every client, and a repeat report opens a new finding.
+ * The client that sees a worker's pull request merge writes `workMergedAt`
+ * once, so the finding reads merged on every client and a repeat report opens
+ * a new finding. The server keeps the first value, so a second write is moot.
  */
 export function useRecordMergedWork(rows: ReadonlyArray<WatcherFindingRow>) {
   const updateFinding = useAtomCommand(serverEnvironment.updateFinding, { reportFailure: false });
@@ -206,7 +216,6 @@ export function useRecordMergedWork(rows: ReadonlyArray<WatcherFindingRow>) {
         row.progress.kind !== "merged" ||
         row.finding.workMergedAt !== null ||
         row.finding.workThread === null ||
-        row.finding.workThread.environmentId === row.environmentId ||
         written.current.has(row.key) ||
         !readEnvironmentScope(row.environmentId, AuthOrchestrationOperateScope)
       ) {

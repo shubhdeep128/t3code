@@ -26,15 +26,20 @@ export function findingWorkIds(findingId: FindingId, attempt: number): FindingWo
   };
 }
 
-export function findingWorkBranch(title: string, attempt: number): string {
+/** `finding/<slug>-<id tail>`, so two findings with one title get two branches. */
+export function findingWorkBranch(findingId: FindingId, title: string, attempt: number): string {
   const slug =
     title
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
-      .slice(0, 48)
+      .slice(0, 40)
       .replace(/-+$/, "") || "finding";
-  return attempt > 1 ? `finding/${slug}-${attempt}` : `finding/${slug}`;
+  const tail = findingId
+    .replace(/[^a-z0-9]/gi, "")
+    .slice(-6)
+    .toLowerCase();
+  return `finding/${slug}-${tail}${attempt > 1 ? `-${attempt}` : ""}`;
 }
 
 const BRIEF_PREAMBLE = [
@@ -63,11 +68,16 @@ export type ClaimOutcome =
 
 export type LaunchOutcome = { readonly ok: true } | { readonly ok: false; readonly error: unknown };
 
+export interface FindingWorkLaunch {
+  readonly environmentId: EnvironmentId;
+  readonly ids: FindingWorkIds;
+}
+
 export type StartFindingWorkResult =
-  | { readonly kind: "launched"; readonly ids: FindingWorkIds }
+  | { readonly kind: "launched"; readonly launch: FindingWorkLaunch }
   | { readonly kind: "claimed_elsewhere" }
   | { readonly kind: "claim_failed"; readonly error: unknown }
-  | { readonly kind: "launch_failed"; readonly ids: FindingWorkIds; readonly error: unknown };
+  | { readonly kind: "launch_failed"; readonly launch: FindingWorkLaunch; readonly error: unknown };
 
 /**
  * Claim first, launch second. The worker's ids derive from the attempt, so the
@@ -85,15 +95,18 @@ export async function startFindingWork(
       readonly workThread: WorkThreadRef;
       readonly expectedWorkAttempt: number;
     }) => Promise<ClaimOutcome>;
-    readonly launch: (ids: FindingWorkIds) => Promise<LaunchOutcome>;
+    readonly launch: (launch: FindingWorkLaunch) => Promise<LaunchOutcome>;
   },
 ): Promise<StartFindingWorkResult> {
   const attempt =
     input.mode.kind === "claim" ? input.mode.expectedWorkAttempt + 1 : input.mode.attempt;
-  const ids = findingWorkIds(input.findingId, attempt);
+  const launch: FindingWorkLaunch = {
+    environmentId: input.workEnvironmentId,
+    ids: findingWorkIds(input.findingId, attempt),
+  };
   if (input.mode.kind === "claim") {
     const claimed = await io.claim({
-      workThread: { environmentId: input.workEnvironmentId, threadId: ids.threadId },
+      workThread: { environmentId: input.workEnvironmentId, threadId: launch.ids.threadId },
       expectedWorkAttempt: input.mode.expectedWorkAttempt,
     });
     if (!claimed.ok) {
@@ -102,8 +115,8 @@ export async function startFindingWork(
         : { kind: "claim_failed", error: claimed.error };
     }
   }
-  const launched = await io.launch(ids);
+  const launched = await io.launch(launch);
   return launched.ok
-    ? { kind: "launched", ids }
-    : { kind: "launch_failed", ids, error: launched.error };
+    ? { kind: "launched", launch }
+    : { kind: "launch_failed", launch, error: launched.error };
 }

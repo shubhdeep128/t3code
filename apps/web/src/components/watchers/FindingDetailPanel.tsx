@@ -77,14 +77,18 @@ export function FindingDetailPanel({
   const workEnvironmentId = workThread?.environmentId ?? null;
   // Settled worker threads stop syncing their pull request, so opening the
   // finding asks the host again. Keyed on the link rather than the row, so a
-  // shell update while the panel is open does not ask twice.
+  // shell update while the panel is open does not ask twice, and delayed so
+  // stepping through rows with j and k asks only where the user stops.
   const referenceKey = reference === null ? null : JSON.stringify(reference);
   useEffect(() => {
     if (referenceKey === null || workEnvironmentId === null) return;
-    void invalidate({
-      environmentId: workEnvironmentId,
-      input: { reference: JSON.parse(referenceKey) as PullRequestRef },
-    });
+    const timer = window.setTimeout(() => {
+      void invalidate({
+        environmentId: workEnvironmentId,
+        input: { reference: JSON.parse(referenceKey) as PullRequestRef },
+      });
+    }, 600);
+    return () => window.clearTimeout(timer);
   }, [invalidate, referenceKey, workEnvironmentId]);
 
   const source = row.finding.source;

@@ -36,8 +36,8 @@ with its outcome, including firings that were skipped because the previous run w
 
 ## Fix a finding
 
-Choose **Fix on** to send a finding to a worker. Pick the environment, the project on it, the base
-branch, and the model. The model starts as the one the filing watcher runs, when that environment
+Choose **Fix on** to send a finding to a worker. Pick the environment, among the connected ones you
+can operate, the project on it, the base branch, and the model. The model starts as the one the filing watcher runs, when that environment
 has it, else the project or environment default. The worker starts in its own worktree on a new
 `finding/…` branch with the finding as its brief. It opens a pull request and stops there; it never
 merges.
@@ -55,7 +55,8 @@ or missing worker opens **Fix on** for a fresh attempt.
 - **Dismiss** hides a finding. Dismissing one with a running worker asks whether to stop the worker
   and close its pull request. **Reopen** brings it back.
 - **Merge** merges the worker's pull request with the repository's merge method, the same as on the
-  pull request page. It needs source control write access on the worker's environment.
+  pull request page, and asks twice: press it, or `m`, again within three seconds. It needs source
+  control write access on the worker's environment.
 
 ## Keyboard
 

@@ -21,8 +21,8 @@ function recorder(outcomes: { claim?: boolean | "conflict"; launch?: boolean } =
         }
         return { ok: true as const };
       },
-      launch: async (ids: unknown) => {
-        calls.push(["launch", ids]);
+      launch: async (launch: unknown) => {
+        calls.push(["launch", launch]);
         return outcomes.launch === false
           ? { ok: false as const, error: new Error("no model") }
           : { ok: true as const };
@@ -37,9 +37,10 @@ const ids1 = {
   messageId: "finding-work:f1:1:brief",
   commandId: "finding-work:f1:1:start",
 };
+const launch1 = { environmentId: "mbp", ids: ids1 };
 
 describe("startFindingWork", () => {
-  it("claims the next attempt with the thread id it will launch, then launches it", async () => {
+  it("claims the next attempt with the thread it will launch, then launches it there", async () => {
     const { calls, io } = recorder();
     const result = await startFindingWork(
       { findingId, workEnvironmentId: mbp, mode: { kind: "claim", expectedWorkAttempt: 0 } },
@@ -53,9 +54,9 @@ describe("startFindingWork", () => {
           expectedWorkAttempt: 0,
         },
       ],
-      ["launch", ids1],
+      ["launch", launch1],
     ]);
-    expect(result).toEqual({ kind: "launched", ids: ids1 });
+    expect(result).toEqual({ kind: "launched", launch: launch1 });
   });
 
   it("never launches when another client claimed first", async () => {
@@ -68,16 +69,20 @@ describe("startFindingWork", () => {
     expect(result).toEqual({ kind: "claimed_elsewhere" });
   });
 
-  it("reports a failed launch with the ids a retry must reuse", async () => {
+  it("reports a failed launch with what a retry must reuse", async () => {
     const { io } = recorder({ launch: false });
     const result = await startFindingWork(
       { findingId, workEnvironmentId: mbp, mode: { kind: "claim", expectedWorkAttempt: 0 } },
       io,
     );
-    expect(result).toEqual({ kind: "launch_failed", ids: ids1, error: new Error("no model") });
+    expect(result).toEqual({
+      kind: "launch_failed",
+      launch: launch1,
+      error: new Error("no model"),
+    });
   });
 
-  it("retries the same thread without claiming again", async () => {
+  it("retries the same thread on the same environment without claiming again", async () => {
     const { calls, io } = recorder();
     const result = await startFindingWork(
       { findingId, workEnvironmentId: mbp, mode: { kind: "retry", attempt: 3 } },
@@ -87,10 +92,13 @@ describe("startFindingWork", () => {
       [
         "launch",
         {
-          attempt: 3,
-          threadId: "finding-work:f1:3",
-          messageId: "finding-work:f1:3:brief",
-          commandId: "finding-work:f1:3:start",
+          environmentId: "mbp",
+          ids: {
+            attempt: 3,
+            threadId: "finding-work:f1:3",
+            messageId: "finding-work:f1:3:brief",
+            commandId: "finding-work:f1:3:start",
+          },
         },
       ],
     ]);
@@ -99,14 +107,15 @@ describe("startFindingWork", () => {
 });
 
 describe("findingWorkBranch", () => {
-  it("slugs the title and numbers later attempts", () => {
-    expect(findingWorkBranch("Deck open p75 regressed 420 ms → 780 ms in 2.31.0", 1)).toBe(
-      "finding/deck-open-p75-regressed-420-ms-780-ms-in-2-31-0",
+  it("slugs the title, keeps a piece of the id and numbers later attempts", () => {
+    const id = FindingId.make("finding:0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0");
+    expect(findingWorkBranch(id, "Deck open p75 regressed 420 ms → 780 ms in 2.31.0", 1)).toBe(
+      "finding/deck-open-p75-regressed-420-ms-780-ms-in-d8e9f0",
     );
-    expect(findingWorkBranch("Rage taps on Welcome “Continue”", 2)).toBe(
-      "finding/rage-taps-on-welcome-continue-2",
+    expect(findingWorkBranch(id, "Rage taps on Welcome “Continue”", 2)).toBe(
+      "finding/rage-taps-on-welcome-continue-d8e9f0-2",
     );
-    expect(findingWorkBranch("???", 1)).toBe("finding/finding");
+    expect(findingWorkBranch(FindingId.make("f1"), "???", 1)).toBe("finding/finding-f1");
   });
 });
 

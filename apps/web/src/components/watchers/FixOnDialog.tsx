@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
+  AuthOrchestrationOperateScope,
   FindingClaimConflict,
   resolveEnvironmentMachineKind,
   type EnvironmentId,
@@ -8,9 +9,10 @@ import {
   type ProjectId,
   type ProviderInstanceId,
   type ScheduledTask,
+  type WorkThreadRef,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
@@ -22,6 +24,7 @@ import {
 import { useProjects } from "../../state/entities";
 import type { EnvironmentPresentation } from "../../state/environments";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
+import { useEnvironmentsWithScope } from "../../state/session";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import type { WatcherFindingRow } from "../../state/watchers";
@@ -58,15 +61,20 @@ type Phase =
 
 const isClaimConflict = Schema.is(FindingClaimConflict);
 
+const sameWorkThread = (a: WorkThreadRef | null, b: WorkThreadRef) =>
+  a !== null && a.environmentId === b.environmentId && a.threadId === b.threadId;
+
 /**
- * Sends a finding to a worker on any connected environment. The claim lands
- * on the finding's own server first, then the thread starts where the user
- * chose, in a worktree off the base branch, with the finding as its brief.
+ * Sends a finding to a worker on any connected environment the user can
+ * operate. The claim lands on the finding's own server first, then the thread
+ * starts where the user chose, in a worktree off the base branch, with the
+ * finding as its brief. `row` is live, so a conflict can be checked against
+ * the claim this dialog already made.
  */
 export function FixOnDialog({
   row,
   mode: initialMode,
-  environments,
+  environments: connected,
   sourceTask,
   onClose,
 }: {
@@ -77,12 +85,22 @@ export function FixOnDialog({
   onClose: () => void;
 }) {
   const id = useId();
+  const operable = useEnvironmentsWithScope(connected, AuthOrchestrationOperateScope);
+  const environments = connected.filter((entry) => operable.has(entry.environmentId));
   const allProjects = useProjects();
   const findingProject = allProjects.find(
     (project) =>
       project.environmentId === row.environmentId && project.id === row.finding.projectId,
   );
-  const [environmentId, setEnvironmentId] = useState<EnvironmentId>(row.environmentId);
+  const [environmentId, setEnvironmentId] = useState<EnvironmentId>(
+    () =>
+      (operable.has(row.environmentId) ? row.environmentId : environments[0]?.environmentId) ??
+      row.environmentId,
+  );
+  const liveWorkThread = useRef(row.finding.workThread);
+  useEffect(() => {
+    liveWorkThread.current = row.finding.workThread;
+  }, [row.finding.workThread]);
   const projects = useMemo(
     () => allProjects.filter((project) => project.environmentId === environmentId),
     [allProjects, environmentId],
@@ -138,6 +156,8 @@ export function FixOnDialog({
   const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
 
   const environment = environments.find((entry) => entry.environmentId === environmentId) ?? null;
+  // Once the claim names this environment and thread, a retry must land there.
+  const claimed = phase.kind === "error" && phase.retry.kind === "retry";
   const canStart =
     phase.kind !== "busy" &&
     environment !== null &&
@@ -153,17 +173,22 @@ export function FixOnDialog({
       { findingId: row.finding.findingId, workEnvironmentId: environmentId, mode },
       {
         claim: async (claim) => {
-          const claimed = await updateFinding({
+          // Fixing from the backlog puts the finding back on Today in the same write.
+          const result = await updateFinding({
             environmentId: row.environmentId,
-            input: { findingId: row.finding.findingId, claim },
+            input: { findingId: row.finding.findingId, triage: "open", claim },
           });
-          if (claimed._tag === "Success") return { ok: true };
-          const error = squashAtomCommandFailure(claimed);
+          if (result._tag === "Success") return { ok: true };
+          const error = squashAtomCommandFailure(result);
+          // A claim whose response was lost shows up as a conflict with our own thread.
+          if (isClaimConflict(error) && sameWorkThread(liveWorkThread.current, claim.workThread)) {
+            return { ok: true };
+          }
           return { ok: false, conflict: isClaimConflict(error), error };
         },
-        launch: async (ids) => {
+        launch: async ({ environmentId: launchEnvironmentId, ids }) => {
           const launched = await startTurn({
-            environmentId,
+            environmentId: launchEnvironmentId,
             input: {
               threadId: ids.threadId,
               commandId: ids.commandId,
@@ -192,7 +217,7 @@ export function FixOnDialog({
                 prepareWorktree: {
                   projectCwd: project.workspaceRoot,
                   baseBranch,
-                  branch: findingWorkBranch(row.finding.title, ids.attempt),
+                  branch: findingWorkBranch(row.finding.findingId, row.finding.title, ids.attempt),
                   requireWorktree: true,
                   ...(startFromOrigin ? { startFromOrigin: true } : {}),
                 },
@@ -225,7 +250,7 @@ export function FixOnDialog({
         setPhase({
           kind: "error",
           message: describe(result.error),
-          retry: { kind: "retry", attempt: result.ids.attempt },
+          retry: { kind: "retry", attempt: result.launch.ids.attempt },
         });
         return;
     }
@@ -258,7 +283,7 @@ export function FixOnDialog({
                   setModelChoice(null);
                 }
               }}
-              disabled={phase.kind === "busy"}
+              disabled={phase.kind === "busy" || claimed}
             >
               <SelectTrigger id={`${id}-environment`} size="sm">
                 <SelectValue>
@@ -289,7 +314,7 @@ export function FixOnDialog({
             <Select
               value={project?.id ?? null}
               onValueChange={(next) => setProjectChoice(next)}
-              disabled={phase.kind === "busy" || projects.length === 0}
+              disabled={phase.kind === "busy" || claimed || projects.length === 0}
             >
               <SelectTrigger id={`${id}-project`} size="sm">
                 <SelectValue placeholder="No projects on this environment">
@@ -322,7 +347,7 @@ export function FixOnDialog({
             </p>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor={`${id}-model`}>Model</Label>
+            <Label render={<span aria-hidden />}>Model</Label>
             {instanceEntries.length === 0 ? (
               <p className="text-sm text-destructive" role="status">
                 No provider is set up on {environment?.label ?? "this environment"}.
@@ -337,6 +362,7 @@ export function FixOnDialog({
                 instanceEntries={instanceEntries}
                 modelOptionsByInstance={modelOptionsByInstance}
                 isComposerOwned={false}
+                triggerAriaLabel="Model"
                 triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                 onInstanceModelChange={(instanceId, model) =>
                   setModelChoice(

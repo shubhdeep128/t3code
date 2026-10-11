@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import { TODAY_GROUP_KEYS, groupFindings } from "@t3tools/client-runtime/state/finding-groups";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -11,6 +12,7 @@ import {
   useWatcherFindings,
   useWatcherFirings,
   useWatcherTasks,
+  watcherClockAtom,
   type WatcherFindingRow,
 } from "../../state/watchers";
 import { useNavigateToMainApp } from "../sidebar/mainAppLocation";
@@ -40,17 +42,8 @@ const VIEWS: ReadonlyArray<{ value: View; label: string }> = [
 
 const isView = (value: unknown): value is View => VIEWS.some((option) => option.value === value);
 
-/** Letter keys stay out of fields and open popups, like the Usage page's shortcuts. */
-function keyboardTargetIsFree(target: EventTarget | null) {
-  return !(
-    target instanceof HTMLElement &&
-    (target.tagName === "INPUT" ||
-      target.tagName === "TEXTAREA" ||
-      target.tagName === "SELECT" ||
-      target.isContentEditable ||
-      target.closest('[role="dialog"], [aria-modal="true"], [data-slot$="popup"]'))
-  );
-}
+/** Nothing chosen yet shows the first row; closed shows none until the next choice. */
+type Selection = { kind: "auto" } | { kind: "key"; key: string } | { kind: "none" };
 
 export function WatchersPage() {
   const environments = useWatcherEnvironments();
@@ -58,14 +51,13 @@ export function WatchersPage() {
   const tasks = useWatcherTasks(environments);
   const firings = useWatcherFirings(environments);
   const projects = useProjects();
+  const nowMs = useAtomValue(watcherClockAtom);
   const navigateToMainApp = useNavigateToMainApp();
   useRecordMergedWork(findings.rows);
 
   const [view, setView] = useState<View>("today");
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [fixOn, setFixOn] = useState<{ row: WatcherFindingRow; mode: StartFindingWorkMode } | null>(
-    null,
-  );
+  const [selection, setSelection] = useState<Selection>({ kind: "auto" });
+  const [fixOn, setFixOn] = useState<{ key: string; mode: StartFindingWorkMode } | null>(null);
   const listView = view === "today" || view === "backlog";
   const showEnvironment = environments.length > 1;
 
@@ -112,13 +104,15 @@ export function WatchersPage() {
     () => shownGroups.flatMap((group) => group.items.map((row) => row.key)),
     [shownGroups],
   );
+  const rowFor = (key: string | undefined) =>
+    key === undefined ? null : (findings.rows.find((row) => row.key === key) ?? null);
   const selected =
-    (selectedKey !== null && orderedKeys.includes(selectedKey)
-      ? findings.rows.find((row) => row.key === selectedKey)
-      : undefined) ??
-    (orderedKeys[0] === undefined
+    selection.kind === "none"
       ? null
-      : (findings.rows.find((row) => row.key === orderedKeys[0]) ?? null));
+      : selection.kind === "key" && orderedKeys.includes(selection.key)
+        ? rowFor(selection.key)
+        : rowFor(orderedKeys[0]);
+  const select = useCallback((key: string) => setSelection({ kind: "key", key }), []);
 
   const sourceTask = selected === null ? null : taskFor(selected);
   const firingRows = useMemo(
@@ -157,6 +151,7 @@ export function WatchersPage() {
             project.environmentId === selected.environmentId &&
             project.id === selected.finding.projectId,
         ) ?? null);
+  const fixOnRow = fixOn === null ? null : rowFor(fixOn.key);
 
   const detailRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -165,6 +160,8 @@ export function WatchersPage() {
     keyActions.current = run;
   }, []);
 
+  // Letter keys belong to the list: they run only with focus on the page body
+  // or a row, so a focused button or link keeps its own Enter and letters.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (
@@ -175,37 +172,42 @@ export function WatchersPage() {
         event.ctrlKey ||
         event.altKey ||
         isCommandPaletteOpen() ||
-        !keyboardTargetIsFree(event.target)
+        fixOn !== null
       ) {
         return;
       }
-      if (event.key === "Escape") {
+      const focus = document.activeElement;
+      const inList = focus === document.body || (listRef.current?.contains(focus) ?? false);
+      const inDetail = detailRef.current?.contains(focus) ?? false;
+      if (event.key === "Escape" && (inList || inDetail)) {
         event.preventDefault();
-        if (detailRef.current?.contains(document.activeElement)) {
+        if (inDetail) {
           listRef.current
             ?.querySelector<HTMLElement>(`[data-finding-key="${CSS.escape(selected?.key ?? "")}"]`)
             ?.focus();
           return;
         }
-        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        if (focus instanceof HTMLElement) focus.blur();
         navigateToMainApp();
         return;
       }
-      if (!listView || fixOn !== null) return;
+      if (!listView || !inList) return;
       if (event.key === "j" || event.key === "k") {
         event.preventDefault();
         if (orderedKeys.length === 0) return;
         const index = selected === null ? -1 : orderedKeys.indexOf(selected.key);
         const next =
           event.key === "j" ? Math.min(index + 1, orderedKeys.length - 1) : Math.max(index - 1, 0);
-        setSelectedKey(orderedKeys[next] ?? null);
+        select(orderedKeys[next]!);
         return;
       }
       if (selected === null) return;
       if (event.key === "Enter") {
         event.preventDefault();
         detailRef.current?.scrollIntoView({ block: "nearest" });
-        detailRef.current?.querySelector<HTMLElement>("button:not([disabled])")?.focus();
+        detailRef.current
+          ?.querySelector<HTMLElement>("[data-finding-actions] button:not([disabled])")
+          ?.focus();
         return;
       }
       const action = actionForKey(event.key, findingActions(selected.progress));
@@ -216,10 +218,7 @@ export function WatchersPage() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [listView, fixOn, orderedKeys, selected, navigateToMainApp]);
-
-  const openFixOn = (row: WatcherFindingRow) => (mode: StartFindingWorkMode) =>
-    setFixOn({ row, mode });
+  }, [listView, fixOn, orderedKeys, selected, select, navigateToMainApp]);
 
   const topbar = (
     <div className="flex w-full min-w-0 items-center gap-3 py-2">
@@ -273,6 +272,7 @@ export function WatchersPage() {
                 findings={findings.rows}
                 loading={tasks.values.length === 0 && tasks.error === null}
                 error={tasks.values.length === 0 ? tasks.error : null}
+                showEnvironment={showEnvironment}
                 onRan={() => firings.refresh()}
               />
             ) : view === "runs" ? (
@@ -289,6 +289,7 @@ export function WatchersPage() {
                     taskTitles={taskTitles}
                     selectedKey={selected?.key ?? null}
                     showEnvironment={showEnvironment}
+                    nowMs={nowMs}
                     emptyTitle={
                       findings.isPending && findings.rows.length === 0
                         ? "Loading findings…"
@@ -301,7 +302,7 @@ export function WatchersPage() {
                         ? "Backlogged and dismissed findings wait here until you restore them."
                         : "When a watcher files a finding, or a worker needs you, it shows here."
                     }
-                    onSelect={setSelectedKey}
+                    onSelect={select}
                   />
                 </div>
                 <div ref={detailRef} className="min-w-0">
@@ -315,8 +316,8 @@ export function WatchersPage() {
                       environmentLabelFor={environmentLabelFor}
                       showEnvironment={showEnvironment}
                       onRunReady={registerKeyActions}
-                      onFixOn={openFixOn(selected)}
-                      onClose={() => setSelectedKey(null)}
+                      onFixOn={(mode) => setFixOn({ key: selected.key, mode })}
+                      onClose={() => setSelection({ kind: "none" })}
                     />
                   )}
                 </div>
@@ -325,12 +326,12 @@ export function WatchersPage() {
           </WorkspacePageContainer>
         </ScrollArea>
       </div>
-      {fixOn ? (
+      {fixOn !== null && fixOnRow !== null ? (
         <FixOnDialog
-          row={fixOn.row}
+          row={fixOnRow}
           mode={fixOn.mode}
           environments={environments}
-          sourceTask={taskFor(fixOn.row)}
+          sourceTask={taskFor(fixOnRow)}
           onClose={() => setFixOn(null)}
         />
       ) : null}
