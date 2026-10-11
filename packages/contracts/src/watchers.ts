@@ -13,6 +13,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { OrchestrationV2RunStatus } from "./orchestrationV2.ts";
+import { ThreadPullRequestLink } from "./threadPullRequest.ts";
 
 export const ScheduledTaskTrigger = Schema.Literals(["scheduled", "manual", "webhook"]);
 export type ScheduledTaskTrigger = typeof ScheduledTaskTrigger.Type;
@@ -119,6 +120,32 @@ export const Finding = Schema.Struct({
 });
 export type Finding = typeof Finding.Type;
 
+/**
+ * How a finding's work is going, from `deriveFindingProgress` in
+ * `@t3tools/shared/findingProgress`. Never stored.
+ */
+export const FindingProgress = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("new") }),
+  Schema.Struct({ kind: Schema.Literal("working"), stalled: Schema.Boolean }),
+  Schema.Struct({
+    kind: Schema.Literal("needs_you"),
+    reason: Schema.Literals(["question", "failed"]),
+  }),
+  Schema.Struct({ kind: Schema.Literal("in_review"), pr: ThreadPullRequestLink }),
+  Schema.Struct({ kind: Schema.Literal("ready_to_merge"), pr: ThreadPullRequestLink }),
+  /** `pr` is the worker's pull request, null when the reader cannot see one. */
+  Schema.Struct({ kind: Schema.Literal("merged"), pr: Schema.NullOr(ThreadPullRequestLink) }),
+  Schema.Struct({ kind: Schema.Literal("detached") }),
+  /** The work thread runs in an environment the reader cannot see. */
+  Schema.Struct({ kind: Schema.Literal("unknown") }),
+  Schema.Struct({ kind: Schema.Literal("backlog") }),
+  Schema.Struct({ kind: Schema.Literal("dismissed") }),
+]);
+export type FindingProgress = typeof FindingProgress.Type;
+
+export const FindingView = Schema.Struct({ ...Finding.fields, progress: FindingProgress });
+export type FindingView = typeof FindingView.Type;
+
 export const FindingsListInput = Schema.Struct({
   /** Every project when omitted. */
   projectId: Schema.optional(ProjectId),
@@ -133,13 +160,23 @@ export const FindingsListInput = Schema.Struct({
 export type FindingsListInput = typeof FindingsListInput.Type;
 
 export const FindingsListResult = Schema.Struct({
-  /** Newest first. */
-  findings: ForwardCompatibleArray(Finding),
+  /** Newest first. Progress reads work threads in the listing environment only. */
+  findings: ForwardCompatibleArray(FindingView),
 });
 export type FindingsListResult = typeof FindingsListResult.Type;
 
 export const FindingsSubscribeInput = Schema.Struct({});
 export type FindingsSubscribeInput = typeof FindingsSubscribeInput.Type;
+
+/**
+ * Without progress: a client derives it from the work thread shell of whichever
+ * environment the work runs in, which keeps it current between emissions.
+ */
+export const FindingsSubscribeResult = Schema.Struct({
+  /** Newest first. */
+  findings: ForwardCompatibleArray(Finding),
+});
+export type FindingsSubscribeResult = typeof FindingsSubscribeResult.Type;
 
 export const FindingsUpdateInput = Schema.Struct({
   findingId: FindingId,
