@@ -37,8 +37,9 @@ const ReportFindingTool = Tool.make("report_finding", {
         "A key that stays the same every time this exact problem is seen, such as the error class and where it happens. Never include a time, run id or count.",
     }),
     title: TrimmedNonEmptyString.annotate({ description: "One line naming the problem." }),
-    detail: Schema.String.annotate({
-      description: "Markdown evidence: what you saw, where, and how to reproduce it.",
+    detail: Schema.String.check(Schema.isMaxLength(20_000)).annotate({
+      description:
+        "Markdown evidence: what you saw, where, and how to reproduce it. At most 20,000 characters.",
     }),
     severity: FindingSeverity,
   }),
@@ -50,7 +51,7 @@ const ReportFindingTool = Tool.make("report_finding", {
 const ListFindingsTool = Tool.make("list_findings", {
   ...shared,
   description:
-    "List findings in this environment, most recently seen first. Omit projectId for every project. since keeps findings last seen at or after an ISO time, triage keeps one decision (open, backlog, dismissed), and query matches the title, detail or fingerprint.",
+    "List findings in this environment, most recently seen first. Omit projectId for every project. since keeps findings last seen at or after an ISO time, triage keeps one decision (open, backlog, dismissed), query matches the title, detail or fingerprint, and limit caps the count (500 when omitted).",
   parameters: FindingsListInput,
   success: Schema.Struct({ findings: Schema.Array(Finding) }),
 })
@@ -62,8 +63,12 @@ const ListFindingsTool = Tool.make("list_findings", {
 const UpdateFindingTool = Tool.make("update_finding", {
   ...shared,
   description:
-    "Change a finding's triage, record when its work merged, or claim it for a work thread. A claim sets workThread, or detaches it with null, only while the finding's workAttempt still equals expectedWorkAttempt; read it from list_findings. A claim that lost to another changes nothing and fails.",
-  parameters: FindingsUpdateInput,
+    "Change a finding's triage, or claim it for a work thread. A claim sets workThread, or detaches it with null, only while the finding's workAttempt still equals expectedWorkAttempt; read it from list_findings. A claim that lost to another changes nothing and fails.",
+  parameters: Schema.Struct({
+    findingId: FindingsUpdateInput.fields.findingId,
+    triage: FindingsUpdateInput.fields.triage,
+    claim: FindingsUpdateInput.fields.claim,
+  }),
   success: Schema.Struct({ finding: Finding }),
 })
   .annotate(Tool.Title, "Update a finding")

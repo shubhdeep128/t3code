@@ -1871,7 +1871,7 @@ const WsFindingsListRpc = Rpc.make(WS_METHODS.findingsList, {
   error: Schema.Union([FindingError, EnvironmentAuthorizationError]),
 });
 
-/** Open findings and those seen in the last 14 days: one list on subscribe, then a fresh one after every change. */
+/** Open findings whose work has not merged, and any seen in the last 14 days: one list on subscribe, then a fresh one after every change. */
 const WsFindingsSubscribeRpc = Rpc.make(WS_METHODS.findingsSubscribe, {
   payload: FindingsSubscribeInput,
   success: FindingsListResult,

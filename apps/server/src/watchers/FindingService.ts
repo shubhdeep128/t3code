@@ -26,7 +26,6 @@ import {
   FindingError,
   FindingId,
   FindingSource,
-  ScheduledTaskId,
   type FindingSeverity,
   type FindingsListInput,
   type FindingsListResult,
@@ -36,13 +35,30 @@ import {
   type ProjectId,
   type RunId,
   type ThreadId,
+  type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as ScheduledTaskFirings from "../scheduledTasks/ScheduledTaskFirings.ts";
 
 const RECENT_DAYS = 14;
+const LIST_LIMIT = 500;
+
+/** The pull request the worker opened from its own branch, else the newest one it linked itself. */
+const workerPullRequest = (
+  shell: OrchestrationV2ThreadShell,
+): ThreadPullRequestLink | undefined => {
+  const links = visibleThreadPullRequests(shell.pullRequests ?? []);
+  return (
+    links.find((link) => shell.branch !== null && link.snapshot?.headBranch === shell.branch) ??
+    links
+      .filter((link) => link.source !== "stack")
+      .toSorted((left, right) => right.linkedAt.localeCompare(left.linkedAt))[0]
+  );
+};
 
 export class FindingService extends Context.Service<
   FindingService,
@@ -62,9 +78,12 @@ export class FindingService extends Context.Service<
       readonly detail: string;
       readonly severity: FindingSeverity;
     }) => Effect.Effect<{ readonly finding: Finding; readonly created: boolean }, FindingError>;
-    /** Newest sighting first. */
+    /** Newest sighting first, at most 500. */
     readonly list: (input: FindingsListInput) => Effect.Effect<FindingsListResult, FindingError>;
-    /** Open findings and those seen in the last 14 days, then the same again after every change. */
+    /**
+     * Open findings whose work has not merged, and any seen in the last 14
+     * days, then the same again after every change.
+     */
     readonly subscribeList: () => Stream.Stream<FindingsListResult, FindingError>;
     readonly update: (
       input: FindingsUpdateInput,
@@ -135,6 +154,8 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const crypto = yield* Crypto.Crypto;
+  const projects = yield* ProjectService.ProjectService;
+  const firings = yield* ScheduledTaskFirings.make;
   const changes = yield* PubSub.sliding<void>(1);
   const notifyChanged = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
   const oneReportAtATime = yield* Semaphore.make(1);
@@ -164,22 +185,21 @@ const make = Effect.gen(function* () {
   `;
 
   /**
-   * Work in another environment counts as merged only once a client that can
-   * see it records `workMergedAt`.
+   * When the finding's work merged, or null. Work in another environment
+   * counts as merged only once a client that can see it records `workMergedAt`.
    */
-  const workMerged = Effect.fn("FindingService.workMerged")(function* (finding: Finding) {
-    if (finding.workMergedAt !== null) return true;
+  const workMergedAt = Effect.fn("FindingService.workMergedAt")(function* (
+    finding: Finding,
+    now: string,
+  ) {
+    if (finding.workMergedAt !== null) return finding.workMergedAt;
     const work = finding.workThread;
     if (work === null || work.environmentId !== (yield* environment.getEnvironmentId)) {
-      return false;
+      return null;
     }
     const shell = yield* threads.getThreadShell(work.threadId);
-    return (
-      shell !== null &&
-      visibleThreadPullRequests(shell.pullRequests ?? []).some(
-        (link) => link.snapshot?.state === "merged",
-      )
-    );
+    const own = shell === null ? undefined : workerPullRequest(shell);
+    return own?.snapshot?.state === "merged" ? (own.snapshot.mergedAt ?? now) : null;
   });
 
   const runBeforeRestartContinuations = Effect.fn("FindingService.runBeforeRestartContinuations")(
@@ -206,17 +226,13 @@ const make = Effect.gen(function* () {
     if (reporter.activeRunId === null) return fallback;
     const run = yield* runBeforeRestartContinuations(reporter.id, reporter.activeRunId);
     if (run === undefined) return fallback;
-    const [firing] = yield* sql<{ readonly task_id: string; readonly fire_key: string }>`
-      SELECT task_id, fire_key FROM fork_watcher_firings
-      WHERE message_id = ${run.userMessageId}
-      LIMIT 1
-    `;
+    const firing = yield* firings.firingForMessage(run.userMessageId);
     return firing === undefined
       ? fallback
       : ({
           type: "scheduled_task",
-          taskId: ScheduledTaskId.make(firing.task_id),
-          fireKey: firing.fire_key,
+          taskId: firing.taskId,
+          fireKey: firing.fireKey,
         } satisfies FindingSource);
   });
 
@@ -227,16 +243,20 @@ const make = Effect.gen(function* () {
     if (reporter === null) {
       return yield* new FindingError({ message: "The reporting thread was not found." });
     }
+    if (input.projectId !== undefined && Option.isNone(yield* projects.getShell(input.projectId))) {
+      return yield* new FindingError({ message: "The project was not found." });
+    }
     const projectId = input.projectId ?? reporter.projectId;
     const now = yield* nowIso;
     const [newestRow] = yield* sql<FindingRow>`
       SELECT * FROM fork_watcher_findings
       WHERE project_id = ${projectId} AND fingerprint = ${input.fingerprint}
-      ORDER BY first_seen_at DESC, rowid DESC
+      ORDER BY rowid DESC
       LIMIT 1
     `;
     const previous = newestRow === undefined ? undefined : yield* fromRow(newestRow);
-    if (previous !== undefined && !(yield* workMerged(previous))) {
+    const previousMergedAt = previous === undefined ? null : yield* workMergedAt(previous, now);
+    if (previous !== undefined && previousMergedAt === null) {
       const [seenRow] = yield* sql<FindingRow>`
         UPDATE fork_watcher_findings
         SET last_seen_at = ${now}, seen_count = seen_count + 1
@@ -250,6 +270,13 @@ const make = Effect.gen(function* () {
         });
       }
       return { finding: yield* fromRow(seenRow), created: false };
+    }
+    if (previous !== undefined && previous.workMergedAt === null) {
+      yield* sql`
+        UPDATE fork_watcher_findings
+        SET work_merged_at = COALESCE(work_merged_at, ${previousMergedAt})
+        WHERE finding_id = ${previous.findingId}
+      `;
     }
 
     const finding: Finding = {
@@ -314,6 +341,7 @@ const make = Effect.gen(function* () {
               ]),
         ])}
         ORDER BY last_seen_at DESC, rowid DESC
+        LIMIT ${input.limit ?? LIST_LIMIT}
       `.pipe(
         Effect.mapError(
           (cause) => new FindingError({ message: "Could not list findings.", cause }),
@@ -334,7 +362,7 @@ const make = Effect.gen(function* () {
     );
     const rows = yield* sql<FindingRow>`
       SELECT * FROM fork_watcher_findings
-      WHERE triage = 'open' OR last_seen_at >= ${cutoff}
+      WHERE (triage = 'open' AND work_merged_at IS NULL) OR last_seen_at >= ${cutoff}
       ORDER BY last_seen_at DESC, rowid DESC
     `;
     return { findings: yield* Effect.forEach(rows, fromRow) };
@@ -358,7 +386,7 @@ const make = Effect.gen(function* () {
   const update: FindingService["Service"]["update"] = (input) =>
     Effect.gen(function* () {
       const { findingId, claim } = input;
-      const workMergedAt = yield* utcIso(input.workMergedAt, "workMergedAt");
+      const mergedAt = yield* utcIso(input.workMergedAt, "workMergedAt");
       const assignments = [
         ...(input.triage === undefined ? [] : [sql`triage = ${input.triage}`]),
         ...(claim === undefined
@@ -367,10 +395,11 @@ const make = Effect.gen(function* () {
               sql`work_environment_id = ${claim.workThread?.environmentId ?? null}`,
               sql`work_thread_id = ${claim.workThread?.threadId ?? null}`,
               sql`work_attempt = work_attempt + 1`,
+              sql`work_merged_at = ${mergedAt ?? null}`,
             ]),
-        ...(workMergedAt === undefined
+        ...(claim !== undefined || mergedAt === undefined
           ? []
-          : [sql`work_merged_at = COALESCE(work_merged_at, ${workMergedAt})`]),
+          : [sql`work_merged_at = COALESCE(work_merged_at, ${mergedAt})`]),
       ];
       const storageError = (cause: unknown) =>
         new FindingError({ message: "Could not update the finding.", findingId, cause });

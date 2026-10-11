@@ -16,6 +16,7 @@ import { McpSchema, McpServer } from "effect/ai";
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
+import * as ProjectService from "../../../project/ProjectService.ts";
 import * as ScheduledTaskFirings from "../../../scheduledTasks/ScheduledTaskFirings.ts";
 import * as FindingService from "../../../watchers/FindingService.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
@@ -115,6 +116,7 @@ const reportFromWatcher = (runs: ReadonlyArray<OrchestrationV2Run>) =>
           }),
         ),
         Layer.provide(NodeCrypto.layer),
+        Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
         Layer.provideMerge(SqlitePersistence.layerMemory),
       ),
     ),

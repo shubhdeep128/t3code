@@ -127,6 +127,8 @@ export const FindingsListInput = Schema.Struct({
   since: Schema.optional(IsoDateTime),
   /** Matches the title, detail or fingerprint, ignoring case. */
   query: Schema.optional(TrimmedNonEmptyString),
+  /** 500 when omitted. */
+  limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }))),
 });
 export type FindingsListInput = typeof FindingsListInput.Type;
 
@@ -145,6 +147,7 @@ export const FindingsUpdateInput = Schema.Struct({
   /**
    * Sets the work thread, or detaches it with null, only if `workAttempt` is
    * still `expectedWorkAttempt`, so two clients cannot both claim a finding.
+   * New work has not merged, so a claim clears `workMergedAt` unless one is given.
    */
   claim: Schema.optional(
     Schema.Struct({
@@ -152,7 +155,7 @@ export const FindingsUpdateInput = Schema.Struct({
       expectedWorkAttempt: NonNegativeInt,
     }),
   ),
-  /** Kept from the first write on. */
+  /** Kept from the first write until the next claim. */
   workMergedAt: Schema.optional(IsoDateTime),
 });
 export type FindingsUpdateInput = typeof FindingsUpdateInput.Type;

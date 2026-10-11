@@ -24,6 +24,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as FindingService from "./FindingService.ts";
 
@@ -53,30 +54,32 @@ class FakeThreads {
     [WATCHER, { ...liveThreadShell(WATCHER), projectId: PROJECT }],
   ]);
 
+  /** The worker's own PR on its branch, under a stack layer that already merged. */
   workerWithPullRequest(state: PullRequestState) {
+    const link = (number: number, headBranch: string, linkState: PullRequestState) => ({
+      host: "github.com",
+      repository: "acme/app",
+      number,
+      url: `https://github.com/acme/app/pull/${number}`,
+      source: number === 7 ? ("agent" as const) : ("stack" as const),
+      linkedAt: at(number),
+      snapshot: {
+        state: linkState,
+        title: "Fix the crash",
+        headBranch,
+        baseBranch: "main",
+        isDraft: false,
+        updatedAt: null,
+        syncedAt: at(0),
+        mergedAt: linkState === "merged" ? at(30_000) : null,
+      },
+      stack: null,
+    });
     this.shells.set(WORKER, {
       ...liveThreadShell(WORKER),
       projectId: PROJECT,
-      pullRequests: [
-        {
-          host: "github.com",
-          repository: "acme/app",
-          number: 7,
-          url: "https://github.com/acme/app/pull/7",
-          source: "agent",
-          linkedAt: at(0),
-          snapshot: {
-            state,
-            title: "Fix the crash",
-            headBranch: "fix/crash",
-            baseBranch: "main",
-            isDraft: false,
-            updatedAt: null,
-            syncedAt: at(0),
-          },
-          stack: null,
-        },
-      ],
+      branch: "fix/crash",
+      pullRequests: [link(7, "fix/crash", state), link(8, "refactor/base", "merged")],
     });
   }
 
@@ -88,6 +91,14 @@ class FakeThreads {
         getThreadRecords: () => Effect.yieldNow.pipe(Effect.as({ runs: [] } as never)),
       }),
       Layer.mock(ServerEnvironment.ServerEnvironment)({ getEnvironmentId: Effect.succeed(HERE) }),
+      Layer.mock(ProjectService.ProjectService)({
+        getShell: (projectId) =>
+          Effect.succeed(
+            projectId === PROJECT || projectId === OTHER_PROJECT
+              ? Option.some({ id: projectId } as never)
+              : Option.none(),
+          ),
+      }),
       // Numbered ids, so a test can name the finding a report files.
       Layer.effect(
         Crypto.Crypto,
@@ -216,6 +227,10 @@ it.effect("a fingerprint whose local work merged opens a new finding that names 
         created: true,
       });
       expect((yield* findings.report(crash)).finding.findingId).toBe("finding:2");
+      expect((yield* findings.list({})).findings.at(-1)).toMatchObject({
+        findingId: "finding:1",
+        workMergedAt: at(30_000),
+      });
     }),
   ),
 );
@@ -253,6 +268,11 @@ it.effect("work on another machine counts as merged once a client records workMe
           seenCount: 2,
         }),
       ]);
+      const reclaimed = yield* findings.update({
+        findingId: FindingId.make("finding:1"),
+        claim: { workThread: { environmentId: HERE, threadId: RIVAL }, expectedWorkAttempt: 1 },
+      });
+      expect(reclaimed.finding.workMergedAt).toBe(null);
     }),
   ),
 );
@@ -365,6 +385,11 @@ it.effect("list filters by project, triage, time and text", () =>
       expect(yield* ids({ since: "2026-10-12T11:00:00+02:00" })).toEqual(["finding:2"]);
       expect(yield* ids({ query: "ORDERS" })).toEqual(["finding:2"]);
       expect(yield* ids({ query: "nullpointer" })).toEqual(["finding:1"]);
+      expect(yield* ids({ limit: 1 })).toEqual(["finding:2"]);
+      const gone = yield* findings
+        .report({ ...crash, projectId: ProjectId.make("project:gone") })
+        .pipe(Effect.flip);
+      expect(gone.message).toBe("The project was not found.");
       expect((yield* findings.list({ since: "last week" }).pipe(Effect.flip)).message).toBe(
         "since is not a date and time.",
       );
@@ -381,9 +406,11 @@ it.effect("subscribe starts with open findings and the last 14 days, then follow
       yield* findings.update({ findingId: FindingId.make("finding:2"), triage: "dismissed" });
       yield* report("old-backlog");
       yield* findings.update({ findingId: FindingId.make("finding:3"), triage: "backlog" });
+      yield* report("old-merged");
+      yield* findings.update({ findingId: FindingId.make("finding:4"), workMergedAt: at(0) });
       yield* TestClock.adjust(17 * DAY);
       yield* report("recent-backlog");
-      yield* findings.update({ findingId: FindingId.make("finding:4"), triage: "backlog" });
+      yield* findings.update({ findingId: FindingId.make("finding:5"), triage: "backlog" });
       yield* TestClock.adjust(3 * DAY);
 
       const firstListed = yield* Deferred.make<void>();

@@ -440,6 +440,19 @@ export function summarizeT3ToolCalls(
     case "capabilities":
       label = phrase("Checked", "check", `orchestration capabilities ${times}`);
       break;
+    case "finding-report":
+      label = phrase("Reported", "report", quantity(selected.length, "finding"));
+      break;
+    case "finding-list":
+      label = phrase("Listed", "list", `findings ${times}`);
+      break;
+    case "finding-update":
+      label = phrase(
+        "Updated",
+        "update",
+        quantity(countEntities(entityIds("findingId")), "finding"),
+      );
+      break;
   }
   return { label, failedCount };
 }
