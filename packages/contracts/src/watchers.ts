@@ -4,6 +4,7 @@ import {
   ForwardCompatibleArray,
   IsoDateTime,
   MessageId,
+  NonNegativeInt,
   ScheduledTaskId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -14,8 +15,9 @@ export const ScheduledTaskTrigger = Schema.Literals(["scheduled", "manual", "web
 export type ScheduledTaskTrigger = typeof ScheduledTaskTrigger.Type;
 
 /**
- * One firing of a scheduled task, written when it dispatches, fails to
- * dispatch, or is skipped. Kept after the task is deleted.
+ * One firing of a scheduled task, written before it dispatches and settled
+ * with the result, or written when it is skipped. Kept after the task is
+ * deleted.
  */
 export const ScheduledTaskFiring = Schema.Struct({
   fireKey: TrimmedNonEmptyString,
@@ -26,6 +28,8 @@ export const ScheduledTaskFiring = Schema.Struct({
   threadId: Schema.NullOr(ThreadId),
   messageId: Schema.NullOr(MessageId),
   skipped: Schema.NullOr(Schema.Literal("previous_run_active")),
+  /** Consecutive skips share one row; `firedAt` is the latest of them. Zero when it dispatched. */
+  skippedCount: NonNegativeInt,
   error: Schema.NullOr(Schema.String),
 });
 export type ScheduledTaskFiring = typeof ScheduledTaskFiring.Type;

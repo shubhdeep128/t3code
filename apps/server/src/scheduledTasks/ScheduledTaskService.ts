@@ -5,7 +5,6 @@ import {
   ScheduledTask,
   ScheduledTaskError,
   ScheduledTaskId,
-  type ScheduledTaskFiring,
   ThreadId,
   ScheduledTaskWebhookDeliveryId,
   type ScheduledTaskDeleteInput,
@@ -721,18 +720,12 @@ export const layer = Layer.effect(
     // nothing started.
     const skipFiring = (
       task: ScheduledTask,
-      firing: Omit<ScheduledTaskFiring, "threadId" | "messageId" | "skipped" | "error">,
+      firing: ScheduledTaskFirings.FiringStart,
       firedAt: DateTime.DateTime,
     ) =>
       Effect.gen(function* () {
         yield* firings
-          .record({
-            ...firing,
-            threadId: null,
-            messageId: null,
-            skipped: "previous_run_active",
-            error: null,
-          })
+          .skip(firing)
           .pipe(
             Effect.mapError((cause) =>
               taskError("Could not record schedule task firing.", { taskId: task.id, cause }),
@@ -835,13 +828,13 @@ export const layer = Layer.effect(
           webhook === undefined
             ? `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
             : `${active.id}:webhook:${webhook.deliveryId}`;
-        const firing = { fireKey, taskId: active.id, trigger, firedAt: startedAtIso };
+        const firing = { fireKey, task: active, trigger, firedAt: startedAtIso };
 
         // Each webhook delivery carries its own request, so deliveries queue
         // behind a running one rather than being skipped.
         if (
           webhook === undefined &&
-          (yield* firings.previousRunActive(active.id).pipe(
+          (yield* firings.previousRunActive(active).pipe(
             Effect.mapError((cause) =>
               taskError("Could not read the previous schedule task firing.", {
                 taskId: active.id,
@@ -858,6 +851,13 @@ export const layer = Layer.effect(
 
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
+        yield* firings
+          .begin(firing, { threadId: active.threadId, messageId })
+          .pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not record schedule task firing.", { taskId: active.id, cause }),
+            ),
+          );
         // Dispatch from the fresh row so prompt/model/binding edits made
         // after the poll read are honoured. A webhook prompt was rendered
         // from the row when the request arrived.
@@ -908,20 +908,22 @@ export const layer = Layer.effect(
         const runSucceeded = result._tag === "Success";
         const lastRunStatus = runSucceeded ? ("succeeded" as const) : ("failed" as const);
         const lastRunError = runSucceeded ? null : errorMessage(result.cause);
-        // The dispatch already happened, so a firing that cannot be recorded
+        // The dispatch already happened, so a firing that cannot be settled
         // must not turn it into a failed run.
         yield* firings
-          .record({
-            ...firing,
-            threadId: !runSucceeded
-              ? null
-              : "threadId" in result.value
-                ? result.value.threadId
-                : result.value.message.threadId,
-            messageId: runSucceeded ? messageId : null,
-            skipped: null,
-            error: lastRunError,
-          })
+          .settle(
+            fireKey,
+            runSucceeded
+              ? {
+                  threadId:
+                    "threadId" in result.value
+                      ? result.value.threadId
+                      : result.value.message.threadId,
+                  messageId,
+                  error: null,
+                }
+              : { threadId: null, messageId: null, error: lastRunError },
+          )
           .pipe(
             Effect.catch((cause) =>
               Effect.logWarning("Could not record schedule task firing", {

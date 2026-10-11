@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import {
+  CommandId,
   MessageId,
   RunId,
   ScheduledTaskUpsertInput,
@@ -10,12 +11,15 @@ import {
   type ScheduledTask,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -51,8 +55,12 @@ class FakeThreads {
     ThreadId,
     { runs: Array<OrchestrationV2Run>; messages: Array<OrchestrationV2ConversationMessage> }
   >();
-  sends = 0;
+  dispatches = 0;
   failNextLaunch = false;
+  /** The status a dispatched prompt's run starts in; `queued` when another run holds the thread. */
+  dispatchedStatus: OrchestrationV2Run["status"] = "running";
+  /** When set, a send reaches the thread, signals this, and never returns. */
+  stallAfterSend: Deferred.Deferred<void> | undefined;
 
   start(threadId: ThreadId, messageId: MessageId, extra: Partial<OrchestrationV2Run> = {}) {
     const thread = this.threads.get(threadId) ?? { runs: [], messages: [] };
@@ -70,6 +78,11 @@ class FakeThreads {
     return run.id;
   }
 
+  update(threadId: ThreadId, runId: RunId, patch: Partial<OrchestrationV2Run>) {
+    const thread = this.threads.get(threadId)!;
+    thread.runs = thread.runs.map((run) => (run.id === runId ? { ...run, ...patch } : run));
+  }
+
   finish(
     threadId: ThreadId,
     runId: RunId,
@@ -77,13 +90,24 @@ class FakeThreads {
     reply: string,
     completedAt: string,
   ) {
-    const thread = this.threads.get(threadId)!;
-    thread.runs = thread.runs.map((run) =>
-      run.id === runId ? { ...run, status, completedAt: DateTime.makeUnsafe(completedAt) } : run,
-    );
-    thread.messages.push(
-      this.message(threadId, MessageId.make(`reply:${runId}`), runId, "assistant", reply),
-    );
+    this.update(threadId, runId, { status, completedAt: DateTime.makeUnsafe(completedAt) });
+    this.threads
+      .get(threadId)!
+      .messages.push(
+        this.message(threadId, MessageId.make(`reply:${runId}`), runId, "assistant", reply),
+      );
+  }
+
+  /** Deleting a thread keeps its records and cancels its unfinished runs. */
+  delete(threadId: ThreadId, deletedAt: string) {
+    for (const run of this.threads.get(threadId)!.runs) {
+      if (!ThreadManagementService.isTerminalRunStatus(run.status)) {
+        this.update(threadId, run.id, {
+          status: "cancelled",
+          completedAt: DateTime.makeUnsafe(deletedAt),
+        });
+      }
+    }
   }
 
   private message(
@@ -100,16 +124,21 @@ class FakeThreads {
     return Layer.mergeAll(
       Layer.mock(ThreadManagementService.ThreadManagementService)({
         sendToThread: (input) =>
-          Effect.sync(() => {
-            this.sends += 1;
-            this.start(input.threadId, input.messageId);
-            return { message: { threadId: input.threadId } } as never;
+          Effect.suspend(() => {
+            this.dispatches += 1;
+            this.start(input.threadId, input.messageId, { status: this.dispatchedStatus });
+            return this.stallAfterSend === undefined
+              ? Effect.succeed({ message: { threadId: input.threadId } } as never)
+              : Deferred.succeed(this.stallAfterSend, undefined).pipe(Effect.andThen(Effect.never));
           }),
         getThreadRecords: (threadId, _fields, filter) => {
           const thread = this.threads.get(threadId);
           if (thread === undefined) {
             return Effect.fail(new OrchestratorProjectionError({ threadId }));
           }
+          const runs = thread.runs.filter(
+            (run) => filter?.runIds === undefined || filter.runIds.includes(run.id),
+          );
           const messages = thread.messages.filter(
             (message) =>
               (filter?.messageIds === undefined || filter.messageIds.includes(message.id)) &&
@@ -117,7 +146,7 @@ class FakeThreads {
               (filter?.messageRunIds === undefined ||
                 (message.runId !== null && filter.messageRunIds.includes(message.runId))),
           );
-          return Effect.succeed({ thread: { id: threadId }, runs: thread.runs, messages } as never);
+          return Effect.succeed({ thread: { id: threadId }, runs, messages } as never);
         },
       }),
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({
@@ -127,6 +156,7 @@ class FakeThreads {
             return Effect.die(new Error("Provider instance is not installed."));
           }
           return Effect.sync(() => {
+            this.dispatches += 1;
             const threadId = ThreadId.make(`thread:${input.commandId}`);
             this.start(threadId, input.initialMessage!.messageId!);
             return { threadId, resumed: false } as never;
@@ -140,13 +170,23 @@ class FakeThreads {
   }
 }
 
-const withService = <A, E>(
+const withService = <A, E, R>(
   threads: FakeThreads,
-  body: (service: ScheduledTaskService.ScheduledTaskService["Service"]) => Effect.Effect<A, E>,
+  body: (service: ScheduledTaskService.ScheduledTaskService["Service"]) => Effect.Effect<A, E, R>,
 ) =>
   ScheduledTaskService.ScheduledTaskService.pipe(
     Effect.flatMap(body),
     Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(threads.dependencies()))),
+  );
+
+/** Waits until the persisted task list shows `done`. */
+const awaitTask = (
+  service: ScheduledTaskService.ScheduledTaskService["Service"],
+  done: (task: ScheduledTask) => boolean,
+) =>
+  service.subscribeList().pipe(
+    Stream.filter(({ tasks }) => tasks[0] !== undefined && done(tasks[0])),
+    Stream.runHead,
   );
 
 /**
@@ -156,14 +196,7 @@ const withService = <A, E>(
  */
 const passAt = (threads: FakeThreads, seconds: number, done: (task: ScheduledTask) => boolean) =>
   TestClock.setTime(T0 + seconds * 1000).pipe(
-    Effect.andThen(
-      withService(threads, (service) =>
-        service.subscribeList().pipe(
-          Stream.filter(({ tasks }) => tasks[0] !== undefined && done(tasks[0])),
-          Stream.runHead,
-        ),
-      ),
-    ),
+    Effect.andThen(withService(threads, (service) => awaitTask(service, done))),
   );
 
 const runIdOf = (fireKey: string) => RunId.make(`run:scheduled-task-message:${fireKey}`);
@@ -194,6 +227,7 @@ it.effect("records a dispatched firing with its message id and the run's real st
           threadId: BOUND_THREAD,
           messageId: MessageId.make(`scheduled-task-message:${fireKey}`),
           skipped: null,
+          skippedCount: 0,
           error: null,
         };
         assert.deepEqual(yield* service.listFirings({ taskId: task.id, limit: 10 }), {
@@ -222,9 +256,10 @@ it.effect("records a dispatched firing with its message id and the run's real st
   ),
 );
 
-it.effect("skips firings while the previous dispatched run is active, then fires again", () =>
+it.effect("skips firings while the previous run is queued or running, then fires again", () =>
   fromT0((threads) =>
     Effect.gen(function* () {
+      threads.dispatchedStatus = "queued";
       const taskId = yield* withService(threads, (service) =>
         Effect.gen(function* () {
           const { task } = yield* service.upsert(yield* taskInput());
@@ -239,28 +274,25 @@ it.effect("skips firings while the previous dispatched run is active, then fires
           return task.id;
         }),
       );
+      const activeRunId = runIdOf(`${taskId}:${T0}:manual`);
 
-      // The second pass must look past the first skipped firing to the active run.
       yield* passAt(threads, 60, (task) => task.nextRunAt === at(120));
+      threads.update(BOUND_THREAD, activeRunId, { status: "running" });
+      // The second pass looks past the skipped firings to the active run.
       yield* passAt(threads, 120, (task) => task.nextRunAt === at(180));
-      threads.finish(
-        BOUND_THREAD,
-        runIdOf(`${taskId}:${T0}:manual`),
-        "completed",
-        "Done.",
-        at(150),
-      );
+      threads.finish(BOUND_THREAD, activeRunId, "completed", "Done.", at(150));
       yield* passAt(threads, 180, (task) => task.runCount === 2);
 
       const { firings } = yield* withService(threads, (service) =>
         service.listFirings({ taskId, limit: 10 }),
       );
       assert.deepEqual(
-        firings.map(({ trigger, firedAt, threadId, skipped, status }) => ({
+        firings.map(({ trigger, firedAt, threadId, skipped, skippedCount, status }) => ({
           trigger,
           firedAt,
           threadId,
           skipped,
+          skippedCount,
           status,
         })),
         [
@@ -269,20 +301,15 @@ it.effect("skips firings while the previous dispatched run is active, then fires
             firedAt: at(180),
             threadId: BOUND_THREAD,
             skipped: null,
-            status: "running",
+            skippedCount: 0,
+            status: "queued",
           },
           {
             trigger: "scheduled",
             firedAt: at(120),
             threadId: null,
             skipped: "previous_run_active",
-            status: "skipped",
-          },
-          {
-            trigger: "scheduled",
-            firedAt: at(60),
-            threadId: null,
-            skipped: "previous_run_active",
+            skippedCount: 2,
             status: "skipped",
           },
           {
@@ -290,6 +317,7 @@ it.effect("skips firings while the previous dispatched run is active, then fires
             firedAt: at(1),
             threadId: null,
             skipped: "previous_run_active",
+            skippedCount: 1,
             status: "skipped",
           },
           {
@@ -297,45 +325,87 @@ it.effect("skips firings while the previous dispatched run is active, then fires
             firedAt: at(0),
             threadId: BOUND_THREAD,
             skipped: null,
+            skippedCount: 0,
             status: "completed",
           },
         ],
       );
-      assert.equal(threads.sends, 2);
+      assert.equal(threads.dispatches, 2);
     }),
   ),
 );
 
-it.effect("follows a cancelled run to its restart continuation", () =>
+it.effect("waits on a firing whose dispatch was cut off before it settled", () =>
+  fromT0((threads) =>
+    Effect.gen(function* () {
+      const sent = yield* Deferred.make<void>();
+      threads.stallAfterSend = sent;
+      yield* withService(threads, (service) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(yield* taskInput());
+          const dispatch = yield* service.runNow({ id: task.id }).pipe(Effect.forkChild);
+          yield* Deferred.await(sent);
+          yield* Fiber.interrupt(dispatch);
+        }),
+      );
+      threads.stallAfterSend = undefined;
+
+      yield* passAt(threads, 60, (task) => task.nextRunAt === at(120));
+      assert.equal(threads.dispatches, 1);
+    }),
+  ),
+);
+
+it.effect("waits for a restart continuation and reports the run it continued to", () =>
   fromT0((threads) =>
     withService(threads, (service) =>
       Effect.gen(function* () {
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
         const { task } = yield* service.upsert(yield* taskInput());
         yield* service.runNow({ id: task.id });
-        const originalRunId = runIdOf(`${task.id}:${T0}:manual`);
+        const cutRunId = runIdOf(`${task.id}:${T0}:manual`);
         const outcome = service.listFirings({ taskId: task.id, limit: 10 }).pipe(
           Effect.map(({ firings }) => {
             const firing = firings.findLast((candidate) => candidate.skipped === null);
             return [firing?.status, firing?.completedAt, firing?.lastMessage];
           }),
         );
+        const runNowAfterASecond = TestClock.adjust("1 second").pipe(
+          Effect.andThen(service.runNow({ id: task.id })),
+        );
 
-        threads.finish(BOUND_THREAD, originalRunId, "cancelled", "Stopped by a restart.", at(30));
+        // Recovery cancels the cut run and queues its continuation in one write.
+        threads.finish(BOUND_THREAD, cutRunId, "cancelled", "Stopped by a restart.", at(30));
+        const effectId = `effect:restart-continuation:${cutRunId}`;
+        yield* outbox.enqueue([
+          {
+            id: effectId,
+            commandId: CommandId.make("command:restart"),
+            threadId: BOUND_THREAD,
+            request: { type: "provider-runtime.continue", sourceRunId: cutRunId },
+          },
+        ]);
         assert.deepEqual(yield* outcome, ["cancelled", at(30), "Stopped by a restart."]);
+        yield* runNowAfterASecond.pipe(Effect.flip);
+        assert.equal(threads.dispatches, 1);
 
-        const continuationId = threads.start(BOUND_THREAD, MessageId.make("restart-continuation"), {
-          restartContinuationOfRunId: originalRunId,
-        });
+        const continuationId = threads.start(
+          BOUND_THREAD,
+          MessageId.make(`message:restart-continuation:${cutRunId}`),
+          { restartContinuationOfRunId: cutRunId },
+        );
+        yield* outbox.claimNext({ workerId: "test", leaseDurationMs: 60_000 });
+        yield* outbox.succeed({ effectId, workerId: "test" });
         assert.deepEqual(yield* outcome, ["running", null, "Stopped by a restart."]);
-        // The continuation is the previous run now, so the next firing waits for it.
-        yield* TestClock.adjust("1 second");
-        yield* service.runNow({ id: task.id }).pipe(Effect.flip);
-        assert.equal(threads.sends, 1);
+        yield* runNowAfterASecond.pipe(Effect.flip);
+        assert.equal(threads.dispatches, 1);
 
         threads.finish(BOUND_THREAD, continuationId, "completed", "Resumed and finished.", at(45));
         assert.deepEqual(yield* outcome, ["completed", at(45), "Resumed and finished."]);
+        yield* runNowAfterASecond;
+        assert.equal(threads.dispatches, 2);
       }),
-    ),
+    ).pipe(Effect.provide(EffectOutbox.layer)),
   ),
 );
 
@@ -348,22 +418,78 @@ it.effect("keeps firings after the task is deleted", () =>
         yield* service.runNow({ id: task.id });
         yield* TestClock.adjust("1 second");
         yield* service.runNow({ id: task.id });
-        // The thread the task launched is deleted along with the task.
-        threads.threads.clear();
+        // A deleted thread's cancelled run is over, so the next firing goes out.
+        threads.delete(
+          ThreadId.make(`thread:scheduled-task:${task.id}:${T0 + 1000}:manual`),
+          at(2),
+        );
+        yield* TestClock.adjust("2 seconds");
+        yield* service.runNow({ id: task.id });
         yield* service.delete({ id: task.id });
 
         const { firings } = yield* service.listFirings({ taskId: task.id, limit: 10 });
         assert.deepEqual(
-          firings.map(({ threadId, status }) => ({ threadId, status })),
+          firings.map(({ firedAt, status, completedAt }) => ({ firedAt, status, completedAt })),
           [
-            {
-              threadId: `thread:scheduled-task:${task.id}:${T0 + 1000}:manual`,
-              status: "unknown",
-            },
-            { threadId: null, status: "failed" },
+            { firedAt: at(3), status: "running", completedAt: null },
+            { firedAt: at(1), status: "cancelled", completedAt: at(2) },
+            { firedAt: at(0), status: "failed", completedAt: null },
           ],
         );
-        assert.include(firings[1]?.error, "Provider instance is not installed.");
+        assert.include(firings[2]?.error, "Provider instance is not installed.");
+      }),
+    ),
+  ),
+);
+
+it.effect("does not hold a recreated task behind the deleted task's run", () =>
+  fromT0((threads) =>
+    withService(threads, (service) =>
+      Effect.gen(function* () {
+        const input = yield* taskInput();
+        const { task } = yield* service.upsert(input);
+        yield* service.runNow({ id: task.id });
+        yield* service.delete({ id: task.id });
+        yield* TestClock.adjust("1 second");
+        yield* service.upsert(input);
+        yield* service.runNow({ id: task.id });
+        assert.equal(threads.dispatches, 2);
+      }),
+    ),
+  ),
+);
+
+it.effect("never skips a webhook delivery", () =>
+  fromT0((threads) =>
+    withService(threads, (service) =>
+      Effect.gen(function* () {
+        const { task } = yield* service.upsert(
+          yield* taskInput({ threadId: null, schedule: { type: "webhook" } }),
+        );
+        const body = new TextEncoder().encode("{}");
+        for (let delivery = 0; delivery < 2; delivery++) {
+          yield* service.triggerWebhook({
+            hookId: task.id,
+            token: task.webhook?.path.split("/").at(-1) ?? "",
+            method: "POST",
+            path: task.webhook?.path ?? "",
+            query: "",
+            headers: { "content-type": "application/json" },
+            body,
+            bodyText: "{}",
+          });
+        }
+        yield* awaitTask(service, (current) => current.runCount === 2);
+
+        const { firings } = yield* service.listFirings({ taskId: task.id, limit: 10 });
+        assert.deepEqual(
+          firings.map(({ trigger, skipped, status }) => ({ trigger, skipped, status })),
+          [
+            { trigger: "webhook", skipped: null, status: "running" },
+            { trigger: "webhook", skipped: null, status: "running" },
+          ],
+        );
+        assert.equal(threads.dispatches, 2);
       }),
     ),
   ),
