@@ -49,7 +49,7 @@ export function WatchersPage() {
   const environments = useWatcherEnvironments();
   const findings = useWatcherFindings(environments);
   const tasks = useWatcherTasks(environments);
-  const firings = useWatcherFirings(environments);
+  const firings = useWatcherFirings(environments, tasks);
   const projects = useProjects();
   const nowMs = useAtomValue(watcherClockAtom);
   const navigateToMainApp = useNavigateToMainApp();
