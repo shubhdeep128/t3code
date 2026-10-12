@@ -6,6 +6,8 @@ import {
   type Finding,
   type FindingProgress,
   type OrchestrationV2ThreadShell,
+  type ScheduledTaskFiringView,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
@@ -189,8 +191,40 @@ export function useWatcherTasks(environments: ReadonlyArray<EnvironmentPresentat
   );
 }
 
-export function useWatcherFirings(environments: ReadonlyArray<EnvironmentPresentation>) {
-  return useMergedFirings(
+const IN_PROGRESS_RUN = new Set<ScheduledTaskFiringView["status"]>([
+  "preparing",
+  "queued",
+  "starting",
+  "running",
+  "waiting",
+]);
+
+/** How many of the given threads have no active run. It rises when one of their runs ends. */
+const endedRunsFamily = Atom.family((key: string) =>
+  Atom.make((get) => {
+    let ended = 0;
+    for (const [environmentId, threadId] of JSON.parse(key) as ReadonlyArray<
+      readonly [EnvironmentId, ThreadId]
+    >) {
+      const shell = get(environmentThreadShells.environmentThreadIndexAtom(environmentId)).get(
+        threadId,
+      );
+      if (shell !== undefined && shell.activeRunId === null) ended += 1;
+    }
+    return ended;
+  }).pipe(Atom.withLabel(`web-watchers:ended-runs:${key}`)),
+);
+
+/**
+ * Firings are a one-shot query, and the server reads each run's outcome only
+ * when asked. Refetch when a task changes, which is when firings are written,
+ * and when the thread behind an in-progress firing stops running.
+ */
+export function useWatcherFirings(
+  environments: ReadonlyArray<EnvironmentPresentation>,
+  tasks: { readonly observations: ReadonlyArray<readonly [EnvironmentId, unknown, number]> },
+) {
+  const firings = useMergedFirings(
     useMemo(
       () =>
         environments.map((environment) => ({
@@ -200,6 +234,30 @@ export function useWatcherFirings(environments: ReadonlyArray<EnvironmentPresent
       [environments],
     ),
   );
+  const { refresh } = firings;
+  const tasksVersion = tasks.observations
+    .map(([environmentId, , observedAt]) => `${environmentId}:${observedAt}`)
+    .join(",");
+  const awaiting = JSON.stringify(
+    firings.values.flatMap(([environmentId, result]) =>
+      result.firings.flatMap((firing) =>
+        IN_PROGRESS_RUN.has(firing.status) && firing.threadId !== null
+          ? [[environmentId, firing.threadId] as const]
+          : [],
+      ),
+    ),
+  );
+  const ended = useAtomValue(endedRunsFamily(awaiting));
+  const seenTasksVersion = useRef(tasksVersion);
+  useEffect(() => {
+    if (seenTasksVersion.current === tasksVersion) return;
+    seenTasksVersion.current = tasksVersion;
+    refresh();
+  }, [tasksVersion, refresh]);
+  useEffect(() => {
+    if (ended > 0) refresh();
+  }, [ended, awaiting, refresh]);
+  return firings;
 }
 
 /**
