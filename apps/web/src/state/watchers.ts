@@ -199,26 +199,33 @@ const IN_PROGRESS_RUN = new Set<ScheduledTaskFiringView["status"]>([
   "waiting",
 ]);
 
-/** How many of the given threads have no active run. It rises when one of their runs ends. */
-const endedRunsFamily = Atom.family((key: string) =>
+/**
+ * Run steps the given threads have finished, read from their shells: one when
+ * a thread's turn ends, and one more when its background work settles, which
+ * is when its run leaves "waiting". It rises with each step.
+ */
+const settledRunStepsFamily = Atom.family((key: string) =>
   Atom.make((get) => {
-    let ended = 0;
+    let steps = 0;
     for (const [environmentId, threadId] of JSON.parse(key) as ReadonlyArray<
       readonly [EnvironmentId, ThreadId]
     >) {
       const shell = get(environmentThreadShells.environmentThreadIndexAtom(environmentId)).get(
         threadId,
       );
-      if (shell !== undefined && shell.activeRunId === null) ended += 1;
+      if (shell === undefined) continue;
+      if (shell.activeRunId === null) steps += 1;
+      if ((shell.activityRunStatus ?? null) === null) steps += 1;
     }
-    return ended;
-  }).pipe(Atom.withLabel(`web-watchers:ended-runs:${key}`)),
+    return steps;
+  }).pipe(Atom.withLabel(`web-watchers:settled-run-steps:${key}`)),
 );
 
 /**
  * Firings are a one-shot query, and the server reads each run's outcome only
  * when asked. Refetch when a task changes, which is when firings are written,
- * and when the thread behind an in-progress firing stops running.
+ * and each time the thread behind an in-progress firing ends its turn or
+ * settles its background work.
  */
 export function useWatcherFirings(
   environments: ReadonlyArray<EnvironmentPresentation>,
@@ -247,7 +254,7 @@ export function useWatcherFirings(
       ),
     ),
   );
-  const ended = useAtomValue(endedRunsFamily(awaiting));
+  const settledSteps = useAtomValue(settledRunStepsFamily(awaiting));
   const seenTasksVersion = useRef(tasksVersion);
   useEffect(() => {
     if (seenTasksVersion.current === tasksVersion) return;
@@ -255,8 +262,8 @@ export function useWatcherFirings(
     refresh();
   }, [tasksVersion, refresh]);
   useEffect(() => {
-    if (ended > 0) refresh();
-  }, [ended, awaiting, refresh]);
+    if (settledSteps > 0) refresh();
+  }, [settledSteps, awaiting, refresh]);
   return firings;
 }
 
