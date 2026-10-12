@@ -30,6 +30,7 @@ import { TodayList } from "./TodayList";
 import { WatcherCards } from "./WatcherCards";
 import { actionForKey, findingActions } from "./findingPresentation";
 import type { StartFindingWorkMode } from "./fixOn.logic";
+import { selectionAfterLeaving } from "./todaySelection.logic";
 
 type View = "today" | "backlog" | "runs" | "watchers";
 
@@ -104,14 +105,25 @@ export function WatchersPage() {
     () => shownGroups.flatMap((group) => group.items.map((row) => row.key)),
     [shownGroups],
   );
-  const rowFor = (key: string | undefined) =>
-    key === undefined ? null : (findings.rows.find((row) => row.key === key) ?? null);
+  const rowFor = (key: string | null | undefined) =>
+    key == null ? null : (findings.rows.find((row) => row.key === key) ?? null);
+  // The order from the last render that still had the chosen row. Once that
+  // row leaves (backlog, dismiss, another client), its neighbor there takes over.
+  const orderWithChosen = useRef<ReadonlyArray<string>>([]);
+  const chosenListed = selection.kind === "key" && orderedKeys.includes(selection.key);
   const selected =
     selection.kind === "none"
       ? null
-      : selection.kind === "key" && orderedKeys.includes(selection.key)
-        ? rowFor(selection.key)
+      : selection.kind === "key"
+        ? rowFor(
+            chosenListed
+              ? selection.key
+              : selectionAfterLeaving(orderWithChosen.current, selection.key, orderedKeys),
+          )
         : rowFor(orderedKeys[0]);
+  useEffect(() => {
+    if (chosenListed) orderWithChosen.current = orderedKeys;
+  }, [chosenListed, orderedKeys]);
   const select = useCallback((key: string) => setSelection({ kind: "key", key }), []);
 
   const sourceTask = selected === null ? null : taskFor(selected);
