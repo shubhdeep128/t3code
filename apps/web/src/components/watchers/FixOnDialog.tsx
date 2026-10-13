@@ -124,9 +124,13 @@ export function FixOnDialog({
   const instanceEntries = useMemo(
     () =>
       sortProviderInstanceEntries(
-        applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings),
+        applyProviderInstanceSettings(
+          deriveProviderInstanceEntries(providers),
+          settings,
+          project?.id ?? null,
+        ),
       ),
-    [providers, settings],
+    [providers, settings, project?.id],
   );
   // The watcher's own model, when the chosen environment has it, then the
   // project or environment default, then the first available model.
