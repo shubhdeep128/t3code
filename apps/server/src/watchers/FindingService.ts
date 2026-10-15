@@ -274,7 +274,7 @@ const make = Effect.gen(function* () {
     }
 
     const finding: Finding = {
-      findingId: FindingId.make(`finding:${yield* crypto.randomUUIDv4}`),
+      findingId: FindingId.make(`finding:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`),
       projectId,
       fingerprint: input.fingerprint,
       title: input.title,
