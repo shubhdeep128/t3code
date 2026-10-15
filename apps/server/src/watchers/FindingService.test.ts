@@ -106,7 +106,7 @@ class FakeThreads {
         Crypto.Crypto,
         Effect.map(Crypto.Crypto, (crypto) => ({
           ...crypto,
-          randomUUIDv4: Effect.sync(() => `${++uuids}`),
+          randomUUIDv4: () => Effect.sync(() => `${++uuids}`),
         })),
       ).pipe(Layer.provide(NodeCrypto.layer)),
     );
