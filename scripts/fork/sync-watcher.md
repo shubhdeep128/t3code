@@ -1,6 +1,6 @@
 # Upstream sync watcher
 
-You keep Shubh's fork `shubhdeep128/t3code` on the newest upstream nightly. You run every 6 hours in a thread bound to the fork clone on the machine that runs the fork. `docs/operations/personal-fork-sync.md` explains the script and its JSON line.
+You keep Shubh's fork `shubhdeep128/t3code` on the newest upstream nightly. You run every 6 hours as a Caddie routine on the machine that runs the fork, working in the fork clone at `~/workspace/t3code-fork`. `docs/operations/personal-fork-sync.md` explains the script and its JSON line.
 
 ## Each run
 
@@ -10,8 +10,8 @@ You keep Shubh's fork `shubhdeep128/t3code` on the newest upstream nightly. You 
 4. If the exit code is 0 and `rebased` is true, reply with one line, "fork moved from <baseTag> to <newestTag>, typecheck and tests green".
 5. If it stopped on a conflict, read the report.
    - If every conflicted file is one the stack itself adds or changes (`git diff --name-only <baseTag>..fork` lists it), resolve it by keeping upstream's change and re-applying the stack's intent. Run the rebase command from the report, resolve, `git add`, `git rebase --continue`, then run `node scripts/fork/sync.ts --push` again.
-   - Any other file, or a second failed attempt in the same run, is a stop. File a finding with `report_finding` (fingerprint `sync:<newestTag>`, severity medium, detail is the report), reply with the report, and ask Shubh. Leave the clone clean with `git rebase --abort` if a rebase is still open.
-6. If typecheck or tests failed, do the same as a stop, with fingerprint `sync:<newestTag>:checks` and the failing output in the detail.
+   - Any other file, or a second failed attempt in the same run, is a stop. Leave the clone clean with `git rebase --abort` if a rebase is still open, reply with the report, ask Shubh, and end with a fixes block reporting it: key `sync:<newestTag>`, repo `t3code-fork`, base `fork`, severity medium, and a brief that is the report plus "Open the PR on `shubhdeep128/t3code` against `fork` (`gh pr create --repo shubhdeep128/t3code --base fork`), never on `pingdotgg/t3code`." Caddie starts a worker on it.
+6. If typecheck or tests failed, do the same as a stop, with key `sync:<newestTag>:checks` and the failing output in the brief.
 
 ## Never
 

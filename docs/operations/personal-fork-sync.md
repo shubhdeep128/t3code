@@ -92,22 +92,15 @@ again to check and push.
 
 ## Run it as a watcher
 
-`scripts/fork/sync-watcher.md` is the prompt for a scheduled task that runs the
-sync every 6 hours, which covers upstream's 3 to 6 nightlies a day. Create it
-from a thread in the fork project on the machine that runs the fork, with
-`schedule_task`:
-
-```json
-{
-  "title": "Upstream sync",
-  "prompt": "Do 'Each run' in scripts/fork/sync-watcher.md.",
-  "schedule": { "type": "interval", "everyMs": 21600000 },
-  "bindToCurrentThread": true
-}
-```
+`scripts/fork/sync-watcher.md` is the prompt for a Caddie routine that runs the
+sync every 6 hours, which covers upstream's 3 to 6 nightlies a day. On the
+machine that runs the fork, give a Caddie agent on Full access a routine every
+6 hours that does: "In ~/workspace/t3code-fork, do 'Each run' in
+scripts/fork/sync-watcher.md."
 
 The watcher stops and asks for help on any conflict outside the stack's own
-files, and files it as a finding so it shows in Watchers.
+files, and reports it as a fix, so Caddie starts a worker on it in T3 Code and
+shows it on the routine's card.
 
 ## Roll back
 
